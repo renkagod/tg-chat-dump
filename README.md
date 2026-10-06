@@ -25,16 +25,16 @@ out/1234567890_My_Chat/
 
 ## Features
 
-- **Fast.** With Telegram's export mode and two accounts it fetches about 115,000 messages a minute, 4× Telegram Desktop's export and 10× the regular API. See [Performance](#performance).
-- **Interactive mode.** Run it without arguments to add or remove accounts, find a chat by name and watch a progress bar with ETA. There is nothing to configure by hand.
-- **Whole chat in one pass.** Messages are sorted into forum topics as they arrive, so you don't export topics one by one.
-- **Parallel and multi-account.** The chat is split into message-id ranges that several workers download at once. Telegram rate-limits each account separately, so each extra account adds roughly the speed of the first.
-- **Resumable and incremental.** Progress is committed to SQLite every 100 messages. If you interrupt it, the next run resumes where it stopped. Later runs fetch only messages newer than the last dump.
-- **Optional extras.** Reactions and views, poll results, formatting with hidden links, comments under channel posts, and Telegram's export mode. Each one is a toggle, see [Extras](#extras).
-- **Filters.** Dump only a date range, one author or one message type, such as links or documents.
-- **Handles flood waits.** When Telegram returns `FLOOD_WAIT`, the run sleeps and continues on its own.
-- **Proxy support.** Accepts SOCKS5 or HTTP proxies, for networks where Telegram is blocked.
-- **Two output formats.** `messages.txt` is for reading, `messages.jsonl` is for scripts, and the full SQLite database is for queries.
+- Over 100,000 messages a minute with Telegram's export mode and two accounts: about 4× Telegram Desktop's export and 10× the regular API (see [Performance](#performance)).
+- Run it without arguments for the interactive mode: add or remove accounts, find a chat as you type, watch a progress bar with ETA.
+- A whole forum in one pass. Messages are sorted into topics as they arrive.
+- The chat is split into message-id ranges that several workers download at once. Telegram limits each account separately, so every extra account adds about as much speed as the first.
+- Progress is committed to SQLite every 100 messages. An interrupted run resumes where it stopped, and later runs fetch only new messages.
+- Optional extras, each a toggle: reactions and views, poll results, formatting with hidden links, comments under channel posts, and Telegram's export mode (see [Extras](#extras)).
+- Filters by date range, author or message type, such as links or documents.
+- On `FLOOD_WAIT` the run sleeps and then continues on its own.
+- SOCKS5 and HTTP proxies, for networks where Telegram is blocked.
+- `messages.txt` for reading, `messages.jsonl` for scripts, and the SQLite database for queries.
 
 ## Quick start
 
@@ -146,7 +146,7 @@ Measured on a large forum supergroup (several hundred thousand messages):
 
 Telegram Desktop was measured on another group, text only, against tg-chat-dump with `takeout` on the same group: ~29,000 vs ~110,000 messages/min.
 
-Telegram's per-account rate limit sets the ceiling either way: about 6,000 messages/min without takeout and about 60,000 with it. Adding workers beyond 3 per account does not help (3, 6 and 12 measured the same) and with many more Telegram starts adding flood waits, so for more speed add accounts. Turn on `takeout`: it is the biggest win.
+Telegram's per-account rate limit sets the ceiling: about 6,000 messages/min without takeout and about 60,000 with it. More than 3 workers per account does not help (3, 6 and 12 measured the same), and with many more Telegram adds flood waits. Turning on `takeout` gives the biggest jump; after that, more speed comes only from more accounts.
 
 ## Output
 
