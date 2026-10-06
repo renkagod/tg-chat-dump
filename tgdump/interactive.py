@@ -241,16 +241,25 @@ async def pick_chat(accounts, chats):
 
 async def describe(item, clients):
     print(f"\n{item.title}  [{item.kind}]  id {item.peer_id}")
+    total = None
     try:
         total = (await clients[0].get_messages(item.target, limit=0)).total
-        print(f"~{total:,} messages")
     except Exception:  # noqa: BLE001 - the count is only informative
         pass
+    have = None
     db_path = DATA / f"{item.entity.id}.sqlite"
     if db_path.exists():
         with sqlite3.connect(db_path) as db:
             have = db.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    if have is None:
+        if total is not None:
+            print(f"~{total:,} messages")
+        return
+    if total is None:
         print(f"{have:,} already saved, only new messages will be fetched")
+        return
+    print(f"~{total:,} messages in total, {have:,} already saved")
+    print(f"~{max(total - have, 0):,} new, only they will be fetched")
 
 
 async def ask_filters():
