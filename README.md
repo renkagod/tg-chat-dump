@@ -4,7 +4,7 @@
 [![Telethon](https://img.shields.io/badge/built%20with-Telethon-26A5E4.svg)](https://github.com/LonamiWebs/Telethon)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-Dump an entire Telegram chat, hundreds of thousands of messages, into SQLite and a folder per forum topic. Runs several workers on several accounts at once, so a big chat takes about an hour instead of an afternoon of clicking "Export chat history" topic by topic in Telegram Desktop.
+Dump an entire Telegram chat into SQLite and a folder per forum topic at **over 100,000 messages a minute**. It runs Telegram's own data-export mode with parallel workers on several accounts, so a chat of several hundred thousand messages is done in minutes instead of an afternoon of clicking "Export chat history" topic by topic in Telegram Desktop.
 
 ```
 out/1234567890_My_Chat/
@@ -21,6 +21,7 @@ out/1234567890_My_Chat/
 
 ## Features
 
+- **Fast.** With Telegram's export mode and two accounts it fetches about 115,000 messages a minute, 10× more than the regular API allows. See [Performance](#performance).
 - **Interactive mode.** Run it without arguments to add or remove accounts, find a chat by name and watch a progress bar with ETA. There is nothing to configure by hand.
 - **Whole chat in one pass.** Messages are sorted into forum topics as they arrive, so you don't export topics one by one.
 - **Parallel and multi-account.** The chat is split into message-id ranges that several workers download at once. Telegram rate-limits each account separately, so each extra account adds roughly the speed of the first.
@@ -136,9 +137,9 @@ Measured on a large forum supergroup (several hundred thousand messages):
 |---|---|---|
 | 1 | ~6,000–7,000 messages/min | ~1h 45m |
 | 2 | ~11,500 messages/min | ~1h |
-| 2, with `takeout` | ~120,000 messages/min | ~6m (extrapolated) |
+| 2, with `takeout` | ~115,000 messages/min | ~6m |
 
-Outside takeout, Telegram's per-account rate limit sets the ceiling, so adding workers beyond about 3 per account does not help.
+Telegram's per-account rate limit sets the ceiling either way: about 6,000 messages/min without takeout and about 60,000 with it. Adding workers beyond 3 per account does not help (3, 6 and 12 measured the same) and with many more Telegram starts adding flood waits, so for more speed add accounts. Turn on `takeout`: it is the biggest win.
 
 ## Output
 
