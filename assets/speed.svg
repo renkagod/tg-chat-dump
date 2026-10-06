@@ -1,8 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="880" height="360" viewBox="0 0 880 360" role="img" aria-label="Over 100,000 messages per minute: about 115,000 with tg-chat-dump, about 29,000 with Telegram Desktop's export, about 6,000 through the regular API">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0a0a0a"/>
-      <stop offset="1" stop-color="#1a1a1a"/>
+      <stop offset="0" stop-color="#0b1220"/>
+      <stop offset="1" stop-color="#132a46"/>
     </linearGradient>
     <linearGradient id="fast" x1="0" y1="0" x2="1" y2="0">
       <stop offset="0" stop-color="#2aabee"/>
@@ -12,13 +12,13 @@
   <style>
     text { font-family: -apple-system, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif; }
     .big { font-size: 92px; font-weight: 800; fill: #ffffff; letter-spacing: -2px; }
-    .unit { font-size: 30px; font-weight: 600; fill: #9a9a9a; }
-    .label { font-size: 17px; fill: #b8b8b8; }
-    .value { font-size: 17px; font-weight: 700; fill: #0a0a0a; }
-    .slow { font-size: 17px; font-weight: 700; fill: #7a7a7a; }
-    .note { font-size: 14px; fill: #5c5c5c; }
+    .unit { font-size: 30px; font-weight: 600; fill: #8fd8ff; }
+    .label { font-size: 17px; fill: #c9d6e6; }
+    .value { font-size: 17px; font-weight: 700; fill: #0b1220; }
+    .slow { font-size: 17px; font-weight: 700; fill: #8a97a8; }
+    .note { font-size: 14px; fill: #6f8299; }
   </style>
-  <rect x="0.5" y="0.5" width="879" height="359" rx="18" fill="url(#bg)" stroke="#2a2a2a"/>
+  <rect width="880" height="360" rx="18" fill="url(#bg)"/>
   <text x="44" y="118" class="big">100,000+</text>
   <text x="490" y="84" class="unit">messages</text>
   <text x="490" y="118" class="unit">per minute</text>
@@ -28,11 +28,11 @@
   <text x="826" y="199" class="value" text-anchor="end">~115,000 / min</text>
 
   <text x="44" y="234" class="label">Telegram Desktop "Export chat history"</text>
-  <rect x="44" y="244" width="200" height="22" rx="6" fill="#4d4d4d"/>
+  <rect x="44" y="244" width="200" height="22" rx="6" fill="#4a5d75"/>
   <text x="256" y="261" class="slow">~29,000 / min</text>
 
   <text x="44" y="296" class="label">regular API, 1 account</text>
-  <rect x="44" y="306" width="42" height="22" rx="6" fill="#333333"/>
+  <rect x="44" y="306" width="42" height="22" rx="6" fill="#3a4a5e"/>
   <text x="98" y="323" class="slow">~6,000 / min</text>
 
   <text x="836" y="350" class="note" text-anchor="end">text only; tg-chat-dump and Telegram Desktop measured on the same group</text>
