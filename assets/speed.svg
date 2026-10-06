@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="300" viewBox="0 0 880 300" role="img" aria-label="Over 100,000 messages per minute: about 115,000 with tg-chat-dump versus about 6,000 through the regular API">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1220"/>
+      <stop offset="1" stop-color="#132a46"/>
+    </linearGradient>
+    <linearGradient id="fast" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#2aabee"/>
+      <stop offset="1" stop-color="#5fd3ff"/>
+    </linearGradient>
+  </defs>
+  <style>
+    text { font-family: -apple-system, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif; }
+    .big { font-size: 92px; font-weight: 800; fill: #ffffff; letter-spacing: -2px; }
+    .unit { font-size: 30px; font-weight: 600; fill: #8fd8ff; }
+    .label { font-size: 17px; fill: #c9d6e6; }
+    .value { font-size: 17px; font-weight: 700; fill: #ffffff; }
+    .slow { font-size: 17px; font-weight: 700; fill: #8a97a8; }
+    .note { font-size: 14px; fill: #6f8299; }
+  </style>
+  <rect width="880" height="300" rx="18" fill="url(#bg)"/>
+  <text x="44" y="118" class="big">100,000+</text>
+  <text x="490" y="84" class="unit">messages</text>
+  <text x="490" y="118" class="unit">per minute</text>
+
+  <text x="44" y="176" class="label">tg-chat-dump, 2 accounts, export mode</text>
+  <rect x="44" y="186" width="792" height="22" rx="6" fill="url(#fast)"/>
+  <text x="826" y="203" class="value" text-anchor="end" style="fill:#0b1220">~115,000 / min</text>
+
+  <text x="44" y="238" class="label">regular API, 1 account</text>
+  <rect x="44" y="248" width="42" height="22" rx="6" fill="#3a4a5e"/>
+  <text x="98" y="265" class="slow">~6,000 / min</text>
+
+  <text x="836" y="290" class="note" text-anchor="end">measured on a forum with several hundred thousand messages</text>
+</svg>
