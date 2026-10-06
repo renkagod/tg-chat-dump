@@ -146,7 +146,7 @@ Measured on a large forum supergroup (several hundred thousand messages):
 | 2, with `takeout` | ~115,000 messages/min | ~6m |
 | Telegram Desktop export, for comparison | ~29,000 messages/min | ~25m (extrapolated) |
 
-Telegram Desktop was measured on another group, text only, against tg-chat-dump with `takeout` on the same group: ~29,000 vs ~110,000 messages/min.
+The Telegram Desktop row comes from a separate side-by-side test on one 420,912-message public group, text only: Telegram Desktop exported ~29,000 messages/min and tg-chat-dump with `takeout` ~110,000. Its full-dump time in the table is extrapolated from that rate.
 
 Telegram's per-account rate limit sets the ceiling: about 6,000 messages/min without takeout and about 60,000 with it. More than 3 workers per account does not help (3, 6 and 12 measured the same), and with many more Telegram adds flood waits. Turning on `takeout` gives the biggest jump; after that, more speed comes only from more accounts.
 
