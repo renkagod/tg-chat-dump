@@ -1,5 +1,6 @@
 # tg-chat-dump
 
+[![PyPI](https://img.shields.io/pypi/v/tg-chat-dump.svg)](https://pypi.org/project/tg-chat-dump/)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
 [![Telethon](https://img.shields.io/badge/built%20with-Telethon-26A5E4.svg)](https://github.com/LonamiWebs/Telethon)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -39,19 +40,20 @@ out/1234567890_My_Chat/
 ## Quick start
 
 1. Create an app at [my.telegram.org](https://my.telegram.org) → *API development tools* and note its `api_id` and `api_hash`.
-2. Clone and install (with [uv](https://docs.astral.sh/uv/)):
+2. Install and run:
+
+   ```sh
+   pipx install tg-chat-dump
+   tg-chat-dump
+   ```
+
+   `uv tool install tg-chat-dump` or `pip install tg-chat-dump` work too. Installed this way, settings and sessions are kept in `~/.tg-chat-dump` and dumps go to `~/tg-chat-dump`.
+
+   From source, with [uv](https://docs.astral.sh/uv/), everything stays inside the checkout (`.env`, `data/`, `out/`):
 
    ```sh
    git clone https://github.com/renkagod/tg-chat-dump.git
    cd tg-chat-dump
-   uv sync
-   ```
-
-   Without uv: `pip install telethon python-dotenv "python-socks[asyncio]" prompt-toolkit`.
-
-3. Run it:
-
-   ```sh
    uv run dump.py
    ```
 
@@ -80,7 +82,7 @@ Dump it with 2 accounts, extras: meta, polls? [Y/n, f = filters]
 - Matching chats pop up under the cursor as you type; Tab fills in the highlighted one and Enter picks it.
 - If nothing in your chats matches the search, public groups and channels are searched too. Public chats can be dumped without joining.
 - Every account that can see the chat is used.
-- `x` toggles the extras, `f` sets the output folder. Both are saved. By default the output goes to `out/` next to `dump.py`.
+- `x` toggles the extras, `f` sets the output folder. Both are saved. By default the output goes to `~/tg-chat-dump`, or `out/` in a source checkout.
 - Answering `f` instead of `Y` asks for filters for this one dump.
 - **Ctrl+C** stops the dump; the next run resumes it.
 - If Telegram is blocked in your network, set `TG_PROXY` in `.env`, for example `TG_PROXY=socks5://127.0.0.1:1080`.
@@ -111,7 +113,7 @@ A filtered dump gets its own database and folder, for example `out/1234567890_My
 
 ## Command line
 
-With arguments it runs without questions, for scripts and cron. Settings come from `.env` (see `.env.example`):
+With arguments it runs without questions, for scripts and cron. Settings come from `.env` (see `.env.example`). The examples use the source checkout; with the installed package, replace `uv run dump.py` with `tg-chat-dump`:
 
 ```sh
 uv run dump.py --chat @somegroup                     # whole chat (or only new messages on repeat runs)

@@ -36,6 +36,7 @@ def setup_logging(console=True):
 def parse_args():
     s = load_settings()
     p = argparse.ArgumentParser(
+        prog="dump.py" if sys.argv[0].endswith("dump.py") else "tg-chat-dump",
         description="Dump a Telegram chat, forum topics included, into SQLite and per-topic folders.",
         epilog="Run without arguments for the interactive mode.",
     )
