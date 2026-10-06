@@ -301,3 +301,30 @@ def test_chat_search_suggests_while_typing_and_tab_fills_in():
     assert suggest("@notes") == ["Заметки и идеи"]
     assert suggest("клуб") == ["Кулинарный клуб"]
     assert suggest("") == []
+
+
+def test_takeout_ignores_a_blank_takeout_id_in_old_sessions():
+    import asyncio
+    import contextlib
+    from types import SimpleNamespace
+
+    from tgdump.fetch import enter_takeout
+
+    class Client:
+        def __init__(self, takeout_id):
+            self.session = SimpleNamespace(takeout_id=takeout_id)
+            self.scopes = None
+
+        def takeout(self, finalize, **scopes):
+            self.scopes = scopes
+            return contextlib.nullcontext(self)
+
+    async def enter(client):
+        async with contextlib.AsyncExitStack() as stack:
+            await enter_takeout(stack, client)
+
+    blank, open_one = Client(b""), Client(42)
+    asyncio.run(enter(blank))
+    asyncio.run(enter(open_one))
+    assert blank.session.takeout_id is None and blank.scopes  # a new takeout is requested
+    assert open_one.scopes == {}  # the one left open is reused

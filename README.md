@@ -90,7 +90,7 @@ All of them are off by default. Switch them on with `x` in the interactive mode,
 | `polls` | poll question, answers, votes; checklist items and which are done | none |
 | `markdown` | `text_md`: the text as Markdown, with bold, links behind words, mentions | none |
 | `comments` | for a channel: the comments under its posts, from the linked discussion group, in `comments/`, grouped by post | a second dump of the discussion group |
-| `takeout` | runs the dump in Telegram's data-export mode, the one Telegram Desktop uses; it may hit fewer rate limits | Telegram asks you to allow the export in the app, sometimes only after a waiting period |
+| `takeout` | runs the dump in Telegram's data-export mode, the one Telegram Desktop uses; it skips the usual rate limits, about 10× faster (see [Performance](#performance)) | the first time, Telegram asks you to allow the export from a phone logged in to that account, otherwise after 24 hours; until then the dump runs at normal speed |
 
 Turning an extra on later does not touch messages that are already saved. A new run adds it to new messages only.
 
@@ -136,8 +136,9 @@ Measured on a large forum supergroup (several hundred thousand messages):
 |---|---|---|
 | 1 | ~6,000–7,000 messages/min | ~1h 45m |
 | 2 | ~11,500 messages/min | ~1h |
+| 2, with `takeout` | ~120,000 messages/min | ~6m (extrapolated) |
 
-Telegram's per-account rate limit sets the ceiling, so adding workers beyond about 3 per account does not help.
+Outside takeout, Telegram's per-account rate limit sets the ceiling, so adding workers beyond about 3 per account does not help.
 
 ## Output
 

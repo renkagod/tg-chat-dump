@@ -17,7 +17,7 @@ OPTIONS = {
     "polls": "poll and checklist contents with results",
     "markdown": "formatting and hidden links, as Markdown in text_md",
     "comments": "for channels: also dump the comments under posts",
-    "takeout": "Telegram's export mode, may be faster (confirm it in the Telegram app)",
+    "takeout": "Telegram's export mode, about 10x faster (allow it once in the Telegram app)",
 }
 
 

@@ -82,10 +82,12 @@ async def fetch_topics(client, entity, db):
 
 async def enter_takeout(stack, client):
     """Telegram's export mode for one account; falls back to the normal client if it is not allowed yet."""
+    if not isinstance(client.session.takeout_id, int):
+        client.session.takeout_id = None  # some session files hold b"" here, which Telethon takes for an open takeout
+    # a takeout left open by a killed run is reused, otherwise a new one is requested
+    scopes = {} if client.session.takeout_id else dict(users=True, chats=True, megagroups=True, channels=True)
     try:
-        return await stack.enter_async_context(
-            client.takeout(finalize=True, users=True, chats=True, megagroups=True, channels=True)
-        )
+        return await stack.enter_async_context(client.takeout(finalize=True, **scopes))
     except errors.TakeoutInitDelayError as e:
         log.warning(
             "Telegram asks to confirm the data export: open Telegram, allow the request from 'Telegram' "
