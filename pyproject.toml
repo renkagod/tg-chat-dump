@@ -1,10 +1,21 @@
 [project]
 name = "tg-chat-dump"
-version = "1.0.0"
-description = "Dump a whole Telegram chat, forum topics included, into SQLite and per-topic folders"
+version = "1.1.0"
+description = "Dump a whole Telegram chat or forum at 100k+ messages a minute into SQLite, JSONL and one folder per topic"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
+authors = [{ name = "renkagod" }]
+keywords = ["telegram", "export", "backup", "archive", "dump", "telethon", "forum", "takeout"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Communications :: Chat",
+    "Topic :: System :: Archiving :: Backup",
+]
 dependencies = [
     "telethon>=1.40",
     "python-dotenv>=1.0",
@@ -12,14 +23,28 @@ dependencies = [
     "prompt-toolkit>=3.0.53",
 ]
 
+[project.scripts]
+tg-chat-dump = "tgdump.cli:run"
+
+[project.urls]
+Homepage = "https://github.com/renkagod/tg-chat-dump"
+Issues = "https://github.com/renkagod/tg-chat-dump/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["tgdump"]
+
+[tool.hatch.build.targets.sdist]
+include = ["tgdump", "tests", "dump.py", "README.md", "LICENSE"]
+
 [dependency-groups]
 dev = [
     "pytest>=8",
     "ruff>=0.6",
 ]
-
-[tool.uv]
-package = false
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

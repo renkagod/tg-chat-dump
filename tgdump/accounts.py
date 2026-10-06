@@ -13,7 +13,7 @@ log = logging.getLogger("dump")
 
 def make_client(name):
     s = load_settings()
-    DATA.mkdir(exist_ok=True)
+    DATA.mkdir(parents=True, exist_ok=True)
     return TelegramClient(
         str(DATA / name),
         int(s["TG_API_ID"]),

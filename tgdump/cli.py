@@ -21,7 +21,7 @@ log = logging.getLogger("dump")
 
 def setup_logging(console=True):
     """Log to data/dump.log and, unless the interactive mode draws its own progress, to the console."""
-    DATA.mkdir(exist_ok=True)
+    DATA.mkdir(parents=True, exist_ok=True)
     handlers = [logging.FileHandler(DATA / "dump.log", encoding="utf-8")]
     if console:
         handlers.append(logging.StreamHandler())
@@ -36,7 +36,6 @@ def setup_logging(console=True):
 def parse_args():
     s = load_settings()
     p = argparse.ArgumentParser(
-        prog="dump.py",
         description="Dump a Telegram chat, forum topics included, into SQLite and per-topic folders.",
         epilog="Run without arguments for the interactive mode.",
     )
