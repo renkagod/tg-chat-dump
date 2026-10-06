@@ -1,6 +1,6 @@
 [project]
 name = "tg-chat-dump"
-version = "1.1.0"
+version = "1.1.1"
 description = "Dump a whole Telegram chat or forum at 100k+ messages a minute into SQLite, JSONL and one folder per topic"
 readme = "README.md"
 license = "MIT"
