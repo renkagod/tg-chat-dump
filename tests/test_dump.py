@@ -281,3 +281,23 @@ def test_scoped_export_goes_to_its_own_folder(db, tmp_path):
 
 def test_slug_keeps_unicode_words():
     assert slug("Заметки и идеи / FAQ") == "Заметки_и_идеи_FAQ"
+
+
+def test_chat_search_suggests_while_typing_and_tab_fills_in():
+    from prompt_toolkit.document import Document
+
+    from tgdump.interactive import ChatCompleter, ChatItem
+
+    chats = {
+        -1001: ChatItem(-1001, None, "Заметки и идеи", "forum", "notes_club", {1}),
+        -1002: ChatItem(-1002, None, "Кулинарный клуб", "group", None, {1, 2}),
+    }
+    completer = ChatCompleter(chats, n_accounts=2)
+
+    def suggest(text):
+        return [c.text for c in completer.get_completions(Document(text), None)]
+
+    assert suggest("зам") == ["Заметки и идеи"]
+    assert suggest("@notes") == ["Заметки и идеи"]
+    assert suggest("клуб") == ["Кулинарный клуб"]
+    assert suggest("") == []

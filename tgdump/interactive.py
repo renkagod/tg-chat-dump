@@ -13,6 +13,9 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from prompt_toolkit import PromptSession
+from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.key_binding import KeyBindings
 from telethon import errors, functions, utils
 from telethon.tl.types import Channel, Chat, User
 
@@ -215,9 +218,58 @@ def print_chats(items, n_accounts):
         print(f"      …and {len(items) - SHOW} more, type more of the name")
 
 
+class ChatCompleter(Completer):
+    """Lists matching chats under the cursor while the name is being typed; Tab fills one in."""
+
+    def __init__(self, chats, n_accounts):
+        self.chats = chats
+        self.n_accounts = n_accounts
+
+    def get_completions(self, document, complete_event):
+        q = document.text_before_cursor.strip()
+        if not q:
+            return
+        for c in self.chats.values():
+            if c.matches(q):
+                user = f"@{c.username}  " if c.username else ""
+                where = f"  {len(c.accounts)}/{self.n_accounts} accounts" if self.n_accounts > 1 else ""
+                yield Completion(
+                    c.title,
+                    start_position=-len(document.text_before_cursor),
+                    display_meta=f"{user}[{c.kind}]{where}",
+                )
+
+
+def chat_prompt(chats, n_accounts):
+    keys = KeyBindings()
+
+    @keys.add("tab")
+    def _(event):
+        # matches can start mid-name, so fill in the first suggestion instead of a common prefix
+        buf = event.current_buffer
+        if buf.complete_state:
+            buf.complete_next()
+        else:
+            buf.start_completion(select_first=True)
+
+    return PromptSession(completer=ChatCompleter(chats, n_accounts), complete_while_typing=True, key_bindings=keys)
+
+
+async def ask_chat(session):
+    prompt = "\nSearch chat (name, @username or id; Tab completes, Enter lists all): "
+    if session is None:
+        return await ask(prompt)
+    return (await session.prompt_async(prompt)).strip()
+
+
 async def pick_chat(accounts, chats):
+    tty = sys.stdin.isatty() and sys.stdout.isatty()  # piped input gets a plain prompt
+    session = chat_prompt(chats, len(accounts)) if tty else None
     while True:
-        q = await ask("\nSearch chat (name, @username or id; Enter lists all): ")
+        q = await ask_chat(session)
+        exact = [c for c in chats.values() if q and c.title.lower() == q.lower()]
+        if len(exact) == 1:  # picked from the suggestions
+            return exact[0]
         items = [c for c in chats.values() if not q or c.matches(q)]
         if not items and q:
             print("Not in your chats, searching public ones…")
@@ -258,8 +310,8 @@ async def describe(item, clients):
     if total is None:
         print(f"{have:,} already saved, only new messages will be fetched")
         return
-    print(f"~{total:,} messages in total, {have:,} already saved")
     print(f"~{max(total - have, 0):,} new, only they will be fetched")
+    print(f"~{total:,} messages in total, {have:,} already saved")
 
 
 async def ask_filters():

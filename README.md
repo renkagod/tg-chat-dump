@@ -42,7 +42,7 @@ out/1234567890_My_Chat/
    uv sync
    ```
 
-   Without uv: `pip install telethon python-dotenv "python-socks[asyncio]"`.
+   Without uv: `pip install telethon python-dotenv "python-socks[asyncio]" prompt-toolkit`.
 
 3. Run it:
 
@@ -61,7 +61,7 @@ Extras: meta, polls
 [a] add account  [d N] remove  [f] output folder  [x] extras  [Enter] continue >
 Loading your chats… 312 found.
 
-Search chat (name, @username or id; Enter lists all): forum
+Search chat (name, @username or id; Tab completes, Enter lists all): forum
    1) Forum Club  @forumclub  [forum]  2/2 accounts
    2) Forum News  @forumnews  [channel]  1/2 accounts
 Number, [p] search public chats, or Enter to search again > 1
@@ -72,6 +72,7 @@ Dump it with 2 accounts, extras: meta, polls? [Y/n, f = filters]
 [████████░░░░░░░░░░░░]  41%  62,104 saved  +62,104  11,480/min  ETA 7m 40s
 ```
 
+- Matching chats pop up under the cursor as you type; Tab fills in the highlighted one and Enter picks it.
 - If nothing in your chats matches the search, public groups and channels are searched too. Public chats can be dumped without joining.
 - Every account that can see the chat is used.
 - `x` toggles the extras, `f` sets the output folder. Both are saved. By default the output goes to `out/` next to `dump.py`.

@@ -9,6 +9,7 @@ dependencies = [
     "telethon>=1.40",
     "python-dotenv>=1.0",
     "python-socks[asyncio]>=2.4",
+    "prompt-toolkit>=3.0.53",
 ]
 
 [dependency-groups]
