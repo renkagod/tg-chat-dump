@@ -86,6 +86,7 @@ Dump it with 2 accounts, extras: meta, polls? [Y/n, f = filters]
 - Answering `f` instead of `Y` asks for filters for this one dump.
 - **Ctrl+C** stops the dump; the next run resumes it.
 - If Telegram is blocked in your network, set `TG_PROXY` in `.env`, for example `TG_PROXY=socks5://127.0.0.1:1080`.
+- The interactive mode is colored in a terminal; set `NO_COLOR=1` to turn colors off.
 
 ## Extras
 

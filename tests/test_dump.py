@@ -328,3 +328,19 @@ def test_takeout_ignores_a_blank_takeout_id_in_old_sessions():
     asyncio.run(enter(open_one))
     assert blank.session.takeout_id is None and blank.scopes  # a new takeout is requested
     assert open_one.scopes == {}  # the one left open is reused
+
+
+def test_colors_keep_the_progress_line_width_and_turn_off_when_disabled(monkeypatch):
+    from tgdump import style
+
+    monkeypatch.setattr(style, "enabled", True)
+    line = style.paint("[████", "blue") + style.paint("░░]", "dim") + " 62%  " + style.paint("112,880/min", "green")
+    plain = style.CODE_RE.sub("", style.fit(line, 12))
+    assert plain == "[████░░] 62%"
+    assert style.CODE_RE.sub("", style.fit(line, 40)) == "[████░░] 62%  112,880/min".ljust(40)
+    assert style.keys("[o] open folder  [Enter] quit > ").count("\x1b[94m") == 3
+
+    monkeypatch.setattr(style, "enabled", False)
+    assert style.paint("done", "green", "bold") == "done"
+    assert style.keys("[y/N] ") == "[y/N] "
+    assert style.fit("abc", 5) == "abc  "
