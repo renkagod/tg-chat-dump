@@ -169,6 +169,11 @@ def save(db, key, rows, done=False):
     db.commit()
 
 
+def clear(db):
+    """Forget everything downloaded, so the chat is fetched again from scratch."""
+    db.executescript("DELETE FROM messages; DELETE FROM tasks; DELETE FROM topics; DELETE FROM exports;")
+
+
 def plan_full(db, first_id, top_id):
     """Split [first_id, top_id] into ranges; existing ranges are kept, only new ones are added on top."""
     # Nothing exists below the first visible message, so those ranges are skipped.

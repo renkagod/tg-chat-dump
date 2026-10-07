@@ -422,3 +422,69 @@ def test_new_message_count_is_exact_for_a_short_gap_and_estimated_for_a_long_one
     long = asyncio.run(interactive.count_new(Client(list(range(1999, 999, -1))), "@chat", db))
     assert short == (2, 9_999, True)
     assert long[1:] == (9_999, False) and 499 <= long[0] <= 501  # 1000 new ids, about half of ids are messages
+
+
+def test_private_chat_is_dumped_by_the_account_that_sees_most_of_it():
+    import asyncio
+    from types import SimpleNamespace
+
+    from tgdump.fetch import busiest
+
+    class Client:
+        def __init__(self, total):
+            self.total = total
+
+        async def get_messages(self, target, limit):
+            if self.total is None:
+                raise ValueError("unknown user")
+            return SimpleNamespace(total=self.total)
+
+    # message ids in a private chat are per account, so their ranges cannot be shared
+    side, main, stranger = Client(1), Client(189_002), Client(None)
+    assert asyncio.run(busiest([(side, "u"), (stranger, "u"), (main, "u")]))[0] is main
+    assert asyncio.run(busiest([(stranger, "u"), (side, "u")]))[0] is side
+
+
+def test_copy_saved_by_another_account_is_recognized(db):
+    import asyncio
+    from types import SimpleNamespace
+
+    from tgdump.fetch import saved_by
+
+    class Client:
+        def __init__(self, dates):
+            self.dates = dates  # id -> date as this account sees it
+
+        async def get_messages(self, entity, ids):
+            return [SimpleNamespace(date=self.dates[i]) if i in self.dates else None for i in ids]
+
+    later = DATE + datetime.timedelta(days=1)
+    assert asyncio.run(saved_by(Client({}), "u", db))  # nothing saved yet
+    db.execute("INSERT INTO tasks(key, lo, cursor) VALUES('k', 0, 0)")
+    save(db, "k", [to_row(msg(i), forum=False) for i in (10, 11)])
+    assert asyncio.run(saved_by(Client({10: DATE}), "u", db))  # 11 was deleted, 10 still matches
+    assert not asyncio.run(saved_by(Client({10: later, 11: later}), "u", db))  # same ids, other messages
+    assert not asyncio.run(saved_by(Client({}), "u", db))
+
+
+def test_account_is_found_by_session_name_username_or_id():
+    import asyncio
+    from types import SimpleNamespace
+
+    from tgdump.accounts import find_account
+
+    class Client:
+        def __init__(self, file, id, username):
+            self.session = SimpleNamespace(filename=f"data/{file}.session")
+            self.me = SimpleNamespace(id=id, username=username)
+
+        async def get_me(self):
+            return self.me
+
+    main, side = Client("session", 101, "Main"), Client("acc2", 202, None)
+    clients = [main, side]
+    assert asyncio.run(find_account(clients, "acc2")) is side
+    assert asyncio.run(find_account(clients, "@main")) is main
+    assert asyncio.run(find_account(clients, 202)) is side
+    with pytest.raises(ValueError):
+        asyncio.run(find_account(clients, "nobody"))

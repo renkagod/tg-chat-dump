@@ -1,10 +1,12 @@
 """Telegram sessions in data/*.session."""
 
 import asyncio
+import contextlib
 import logging
+from pathlib import Path
 
 from telethon import TelegramClient
-from telethon.tl.types import PeerChannel
+from telethon.tl.types import PeerChannel, PeerUser
 
 from .config import DATA, load_settings, parse_proxy
 
@@ -56,9 +58,22 @@ async def open_accounts(timeout=30):
 
 
 async def resolve(client, chat):
-    target = PeerChannel(chat) if isinstance(chat, int) and chat > 0 else chat
-    try:
-        return await client.get_entity(target)
-    except ValueError:  # a fresh session does not know the chat's access_hash yet
-        await client.get_dialogs()
-        return await client.get_entity(target)
+    # a bare positive id is a channel or group, otherwise a user
+    targets = [PeerChannel(chat), PeerUser(chat)] if isinstance(chat, int) and chat > 0 else [chat]
+    for fresh in (False, True):
+        if fresh:  # a fresh session does not know the chat's access_hash yet
+            await client.get_dialogs()
+        for target in targets:
+            with contextlib.suppress(ValueError):
+                return await client.get_entity(target)
+    raise ValueError(f"Cannot find {chat}")
+
+
+async def find_account(clients, ref):
+    """The client named by its session file (as in --login), @username or user id."""
+    ref = str(ref).lstrip("@").lower()
+    for c in clients:
+        me = await c.get_me()
+        if ref in {Path(c.session.filename).stem.lower(), str(me.id), (me.username or "").lower()}:
+            return c
+    raise ValueError(f"no logged-in account matches {ref!r}")

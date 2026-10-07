@@ -25,7 +25,7 @@ from telethon.tl.types import Channel, Chat, User
 from . import style
 from .accounts import make_client, new_session_name, open_accounts
 from .config import DATA, OPTIONS, ensure_api_keys, load_settings, out_dir, save_options, save_settings, saved_options
-from .fetch import dump_chat
+from .fetch import dump_chat, saved_by
 from .scope import KINDS, Scope, parse_date
 from .style import fit, keys, kind, link, paint, visible_len
 from .util import fmt_duration
@@ -337,18 +337,44 @@ async def count_new(client, target, db):
     return round((newest[0].id - top) * near / window), newest.total, False
 
 
-async def describe(item, clients):
-    print(f"\n{paint(item.title, 'bold')}  {kind(item.kind)}  {paint(f'id {item.peer_id}', 'dim')}")
+async def pick_account(item, accounts):
+    """Private chats and basic groups are dumped by one account: each account has its own copy of them."""
+    counts = []
+    for c, _ in accounts:
+        try:
+            counts.append((await c.get_messages(item.target, limit=0)).total)
+        except (ValueError, TypeError, errors.RPCError):
+            counts.append(0)
+    order = sorted(range(len(accounts)), key=lambda i: -counts[i])
+    print(paint("Every account has its own copy of this chat:", "dim"))
+    for n, i in enumerate(order, 1):
+        count = f"{counts[i]:,} message{'s' * (counts[i] != 1)}"
+        print(f"  {paint(f'{n:>2})', 'blue')} {account_name(accounts[i][1])}  {count}")
+    while True:
+        choice = await ask(keys("Account number (Enter = 1) > "))
+        if not choice:
+            return accounts[order[0]]
+        if choice.isdigit() and 1 <= int(choice) <= len(order):
+            return accounts[order[int(choice) - 1]]
+        print(paint("  No such account, try again", "yellow"))
+
+
+async def describe(item, client):
     db_path = DATA / f"{item.entity.id}.sqlite"
     if not db_path.exists():
         with contextlib.suppress(Exception):  # the count is only informative
-            print(f"~{(await clients[0].get_messages(item.target, limit=0)).total:,} messages")
+            print(f"~{(await client.get_messages(item.target, limit=0)).total:,} messages")
         return
     with contextlib.closing(sqlite3.connect(db_path)) as db:
         have = db.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
         unfinished = db.execute("SELECT COUNT(*) FROM tasks WHERE done=0").fetchone()[0]
         try:
-            new, total, exact = await count_new(clients[0], item.target, db)
+            if not isinstance(item.entity, Channel) and not await saved_by(client, item.target, db):
+                total = (await client.get_messages(item.target, limit=0)).total
+                print(paint(f"~{total:,} messages", "green", "bold"))
+                print(paint(f"The {have:,} saved ones came from another account, the chat is fetched again", "dim"))
+                return
+            new, total, exact = await count_new(client, item.target, db)
         except Exception:  # noqa: BLE001
             print(f"{have:,} already saved, only new messages will be fetched")
             return
@@ -493,11 +519,15 @@ async def main():
         chats = await load_chats(accounts)
         while True:
             item = await pick_chat(accounts, chats)
-            clients = [c for c, me in accounts if item.public or me.id in item.accounts]
-            await describe(item, clients)
+            seen = [(c, me) for c, me in accounts if item.public or me.id in item.accounts]
+            print(f"\n{paint(item.title, 'bold')}  {kind(item.kind)}  {paint(f'id {item.peer_id}', 'dim')}")
+            if not isinstance(item.entity, Channel) and len(seen) > 1:
+                seen = [await pick_account(item, seen)]
+            clients = [c for c, _ in seen]
+            await describe(item, clients[0])
             n, options = len(clients), saved_options()
             extras = f", extras: {paint(', '.join(o for o in OPTIONS if o in options), 'green')}" if options else ""
-            who = paint(f"{n} account{'s' * (n > 1)}", "bold")
+            who = account_name(seen[0][1]) if n == 1 else paint(f"{n} accounts", "bold")
             answer = (await ask(f"Dump it with {who}{extras}? {keys('[Y/n, f = filters]')} ")).lower()
             if answer == "n":
                 continue

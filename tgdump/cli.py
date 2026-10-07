@@ -9,7 +9,7 @@ from pathlib import Path
 from telethon import utils
 
 from . import interactive
-from .accounts import make_client, open_accounts, resolve
+from .accounts import find_account, make_client, open_accounts, resolve
 from .config import DATA, OPTIONS, ensure_api_keys, load_settings, parse_options, save_settings
 from .export import export_db
 from .fetch import dump_chat
@@ -43,6 +43,12 @@ def parse_args():
     p.add_argument("--chat", default=s["TG_CHAT"], help="chat id, @username or t.me link")
     p.add_argument("--topics", help="comma-separated topic ids; without it the whole chat is dumped")
     p.add_argument("--workers", type=int, default=3, help="parallel workers per account")
+    p.add_argument(
+        "--account",
+        metavar="NAME",
+        help="dump with this account only: session name (as in --login), @username or user id; "
+        "private chats default to the account with the most messages",
+    )
     p.add_argument(
         "--with",
         dest="options",
@@ -85,14 +91,20 @@ async def main():
             c = make_client("session")
             await c.start()
             clients = [c]
+        using = clients
+        if a.account:
+            try:
+                using = [await find_account(clients, a.account)]
+            except ValueError as e:
+                raise SystemExit(f"--account: {e}") from None
         chat = parse_chat(a.chat)
         if a.export_only:
-            entity = await resolve(clients[0], chat)
+            entity = await resolve(using[0], chat)
             db_path = DATA / f"{entity.id}{a.scope.db_suffix()}.sqlite"
             export_db(db_path, entity.id, utils.get_display_name(entity), scope=a.scope, full=True)
             return
         topics = [int(t) for t in a.topics.split(",")] if a.topics else None
-        await dump_chat(clients, chat, topics=topics, workers=a.workers, options=a.options, scope=a.scope)
+        await dump_chat(using, chat, topics=topics, workers=a.workers, options=a.options, scope=a.scope)
     finally:
         for c in clients:
             await c.disconnect()

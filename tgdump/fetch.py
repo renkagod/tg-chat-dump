@@ -17,8 +17,8 @@ from .accounts import resolve
 from .config import DATA
 from .export import export_db
 from .scope import NO_SCOPE, Scope
-from .store import BATCH_SIZE, open_db, plan_full, plan_topics, range_work_left, save, to_row
-from .util import fmt_duration
+from .store import BATCH_SIZE, clear, open_db, plan_full, plan_topics, range_work_left, save, to_row
+from .util import fmt_duration, iso
 
 log = logging.getLogger("dump")
 
@@ -103,6 +103,29 @@ async def enter_takeout(stack, client):
         return client
 
 
+async def busiest(pairs):
+    """The (client, chat) pair whose account sees the most messages in the chat; pairs that fail are skipped."""
+    best, most = pairs[0], -1
+    for c, e in pairs:
+        with contextlib.suppress(ValueError, TypeError, errors.RPCError):
+            n = (await c.get_messages(e, limit=0)).total
+            if n > most:
+                best, most = (c, e), n
+    return best
+
+
+async def saved_by(client, entity, db):
+    """Whether the stored messages came from this account: private chats number messages per account.
+
+    The newest stored ids are looked up; one of them with the same date is enough (others may be deleted).
+    """
+    stored = db.execute("SELECT id, date FROM messages ORDER BY id DESC LIMIT 5").fetchall()
+    if not stored:
+        return True
+    found = await client.get_messages(entity, ids=[i for i, _ in stored])
+    return any(m is not None and iso(m.date) == date for m, (_, date) in zip(found, stored, strict=True))
+
+
 async def id_bounds(client, entity, scope):
     """First and last message id to scan, narrowed to the scope's dates. Returns (first, top, total)."""
     latest = await client.get_messages(entity, limit=1)
@@ -148,6 +171,9 @@ async def dump_chat(
             log.warning(f"{utils.get_display_name(await c.get_me())} cannot see this chat, skipping")
     if not pairs:
         raise ValueError("None of the accounts can access this chat")
+    if not isinstance(pairs[0][1], Channel):
+        # private chats and basic groups number messages per account, so one account does the whole chat
+        pairs = [await busiest(pairs)]
     stats["accounts"] = len(pairs)
 
     client, entity = pairs[0]
@@ -164,6 +190,9 @@ async def dump_chat(
             log.info(f"Filters: {scope.tag()}")
 
         stats["phase"] = "planning"
+        if not isinstance(entity, Channel) and not await saved_by(client, entity, db):
+            log.warning("The saved copy came from another account, downloading the chat again")
+            clear(db)
         if forum:
             await fetch_topics(client, entity, db)
         if topics:
