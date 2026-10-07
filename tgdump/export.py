@@ -56,26 +56,41 @@ def chat_folder(chat_id, chat_title, scope=NO_SCOPE, out_root=None):
     return (out_root or out_dir()) / name
 
 
-def export(db, chat_id, chat_title, out_root=None, scope=NO_SCOPE, folder=None, threads=False):
+def appendable_since(db, out, titles):
+    """The last exported message id when only newer messages were saved since, so they can be appended."""
+    row = db.execute("SELECT max_id, rows, titles FROM exports WHERE folder=?", (str(out),)).fetchone()
+    if not row or row[2] != titles or not out.is_dir():
+        return None  # never exported here, or a topic was renamed and its folder name changed
+    max_id, rows, _ = row
+    if db.execute("SELECT COUNT(*) FROM messages WHERE id <= ?", (max_id,)).fetchone()[0] != rows:
+        return None  # older messages were added too, e.g. a resumed range, so the order needs a rewrite
+    return max_id
+
+
+def export(db, chat_id, chat_title, out_root=None, scope=NO_SCOPE, folder=None, threads=False, full=False):
     """Write <out>/<chat>/<topic id>_<title>/messages.jsonl and messages.txt.
 
+    Later runs append only the new messages, unless older ones changed; full=True rewrites everything.
     With threads=True (a channel's discussion group) everything goes to one folder,
     ordered by thread, and each thread is headed by the channel post it belongs to.
     """
     out = folder or chat_folder(chat_id, chat_title, scope, out_root)
     titles = dict(db.execute("SELECT id, title FROM topics"))
+    fingerprint = json.dumps(sorted(titles.items()), ensure_ascii=False)
     cols = [c[1] for c in db.execute("PRAGMA table_info(messages)")]
+    since = None if full or threads else appendable_since(db, out, fingerprint)
     if threads:
         groups = [(None, "", (), "COALESCE(reply_top, reply_to, id), id")]
     else:
-        topic_ids = [t for (t,) in db.execute("SELECT DISTINCT topic_id FROM messages")]
-        groups = [(t, "WHERE topic_id IS ?", (t,), "id") for t in topic_ids]
+        topic_ids = [t for (t,) in db.execute("SELECT DISTINCT topic_id FROM messages WHERE id > ?", (since or 0,))]
+        groups = [(t, "WHERE topic_id IS ? AND id > ?", (t, since or 0), "id") for t in topic_ids]
+    mode = "w" if since is None else "a"
     for t, where, params, order in groups:
         target = out if t is None else out / f"{t}_{slug(titles.get(t) or ('General' if t == 1 else ''))}".rstrip("_")
         target.mkdir(parents=True, exist_ok=True)
         with (
-            open(target / "messages.jsonl", "w", encoding="utf-8") as fj,
-            open(target / "messages.txt", "w", encoding="utf-8") as ft,
+            open(target / "messages.jsonl", mode, encoding="utf-8") as fj,
+            open(target / "messages.txt", mode, encoding="utf-8") as ft,
         ):
             current = None
             for r in db.execute(f"SELECT * FROM messages {where} ORDER BY {order}", params):
@@ -88,7 +103,10 @@ def export(db, chat_id, chat_title, out_root=None, scope=NO_SCOPE, folder=None, 
                         ft.write(f"\n=== {f'post #{post}' if post else f'thread #{current}'} ===\n")
                 fj.write(json.dumps(m, ensure_ascii=False) + "\n")
                 ft.write(text_line(m))
-    log.info(f"Exported to {out}")
+    max_id, rows = db.execute("SELECT MAX(id), COUNT(*) FROM messages").fetchone()
+    db.execute("INSERT OR REPLACE INTO exports VALUES(?, ?, ?, ?)", (str(out), max_id or 0, rows, fingerprint))
+    db.commit()
+    log.info(f"{'Exported' if since is None else 'Appended the new messages'} to {out}")
     return out
 
 

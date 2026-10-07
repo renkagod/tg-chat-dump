@@ -89,7 +89,7 @@ async def main():
         if a.export_only:
             entity = await resolve(clients[0], chat)
             db_path = DATA / f"{entity.id}{a.scope.db_suffix()}.sqlite"
-            export_db(db_path, entity.id, utils.get_display_name(entity), scope=a.scope)
+            export_db(db_path, entity.id, utils.get_display_name(entity), scope=a.scope, full=True)
             return
         topics = [int(t) for t in a.topics.split(",")] if a.topics else None
         await dump_chat(clients, chat, topics=topics, workers=a.workers, options=a.options, scope=a.scope)

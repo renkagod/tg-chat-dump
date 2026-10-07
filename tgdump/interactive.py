@@ -2,6 +2,7 @@
 
 import asyncio
 import collections
+import contextlib
 import logging
 import os
 import re
@@ -33,6 +34,7 @@ log = logging.getLogger("dump")
 FLOOD_RE = re.compile(r"Sleeping (?:early )?for (\d+)s")
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 SHOW = 15  # chats listed per search
+PEEK = 100  # newest messages fetched to count what a repeat dump will add
 MENU_STYLE = {
     "completion-menu.completion": "bg:#2b2d31 #dcdfe4",
     "completion-menu.meta.completion": "bg:#2b2d31 #dcdfe4",
@@ -317,27 +319,48 @@ async def pick_chat(accounts, chats):
             return items[int(choice) - 1]
 
 
+async def count_new(client, target, db):
+    """Messages newer than the last saved one, and Telegram's total for the chat.
+
+    Telegram's total drops when messages are deleted while the database keeps them, so the
+    difference of the two undercounts. Instead the newest messages are fetched: up to PEEK
+    the count is exact, beyond that it is estimated from how densely the saved ids lie.
+    """
+    top, first = db.execute("SELECT MAX(id), MIN(id) FROM messages").fetchone()
+    newest = await client.get_messages(target, limit=PEEK, min_id=top or 0)
+    if not top:  # nothing saved yet
+        return newest.total, newest.total, False
+    if len(newest) < PEEK:
+        return len(newest), newest.total, True
+    window = min(5000, top - first + 1)
+    near = db.execute("SELECT COUNT(*) FROM messages WHERE id > ?", (top - window,)).fetchone()[0]
+    return round((newest[0].id - top) * near / window), newest.total, False
+
+
 async def describe(item, clients):
     print(f"\n{paint(item.title, 'bold')}  {kind(item.kind)}  {paint(f'id {item.peer_id}', 'dim')}")
-    total = None
-    try:
-        total = (await clients[0].get_messages(item.target, limit=0)).total
-    except Exception:  # noqa: BLE001 - the count is only informative
-        pass
-    have = None
     db_path = DATA / f"{item.entity.id}.sqlite"
-    if db_path.exists():
-        with sqlite3.connect(db_path) as db:
-            have = db.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-    if have is None:
-        if total is not None:
-            print(f"~{total:,} messages")
+    if not db_path.exists():
+        with contextlib.suppress(Exception):  # the count is only informative
+            print(f"~{(await clients[0].get_messages(item.target, limit=0)).total:,} messages")
         return
-    if total is None:
-        print(f"{have:,} already saved, only new messages will be fetched")
-        return
-    print(paint(f"~{max(total - have, 0):,} new", "green", "bold") + paint(", only they will be fetched", "green"))
-    print(paint(f"~{total:,} messages in total, {have:,} already saved", "dim"))
+    with contextlib.closing(sqlite3.connect(db_path)) as db:
+        have = db.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        unfinished = db.execute("SELECT COUNT(*) FROM tasks WHERE done=0").fetchone()[0]
+        try:
+            new, total, exact = await count_new(clients[0], item.target, db)
+        except Exception:  # noqa: BLE001
+            print(f"{have:,} already saved, only new messages will be fetched")
+            return
+    if unfinished:  # an interrupted dump also has older ranges left
+        print(
+            paint(f"~{max(total - have, new):,} to fetch", "green", "bold")
+            + paint(", the stopped dump resumes", "green")
+        )
+    else:
+        count = f"{new:,}" if exact else f"~{new:,}"
+        print(paint(f"{count} new", "green", "bold") + paint(", only they will be fetched", "green"))
+    print(paint(f"~{total:,} messages in the chat, {have:,} already saved", "dim"))
 
 
 async def ask_filters():

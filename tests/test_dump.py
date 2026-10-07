@@ -380,3 +380,45 @@ def test_takeout_is_on_until_extras_are_set(monkeypatch, tmp_path):
 
     config.save_options({"meta"})
     assert config.saved_options() == {"meta"}
+
+
+def test_repeat_export_appends_new_messages_and_rewrites_when_older_ones_arrive(db, tmp_path):
+    db.execute("INSERT INTO tasks(key, lo, cursor) VALUES('k', 0, 0)")
+    save(db, "k", [to_row(msg(20, "first"), forum=False)])
+    out = export(db, 7, "Chat", out_root=tmp_path)
+    txt = out / "messages.txt"
+    txt.write_text(txt.read_text(encoding="utf-8") + "marker\n", encoding="utf-8")
+
+    save(db, "k", [to_row(msg(21, "newer"), forum=False)])
+    export(db, 7, "Chat", out_root=tmp_path)
+    lines = txt.read_text(encoding="utf-8").splitlines()
+    assert lines[1] == "marker" and lines[2].endswith("#21 ?: newer")  # appended, not rewritten
+
+    save(db, "k", [to_row(msg(5, "older"), forum=False)])  # e.g. a resumed range below the last export
+    export(db, 7, "Chat", out_root=tmp_path)
+    ids = [json.loads(line)["id"] for line in (out / "messages.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert ids == [5, 20, 21] and "marker" not in txt.read_text(encoding="utf-8")
+
+
+def test_new_message_count_is_exact_for_a_short_gap_and_estimated_for_a_long_one(db):
+    import asyncio
+    from types import SimpleNamespace
+
+    from tgdump import interactive
+
+    class Found(list):
+        total = 9_999
+
+    class Client:
+        def __init__(self, newest_ids):
+            self.newest_ids = newest_ids
+
+        async def get_messages(self, target, limit, min_id):
+            return Found(SimpleNamespace(id=i) for i in self.newest_ids[:limit])
+
+    db.execute("INSERT INTO tasks(key, lo, cursor) VALUES('k', 0, 0)")
+    save(db, "k", [to_row(msg(i), forum=False) for i in range(1, 1001, 2)])  # every other id saved, up to 999
+    short = asyncio.run(interactive.count_new(Client([1005, 1003]), "@chat", db))
+    long = asyncio.run(interactive.count_new(Client(list(range(1999, 999, -1))), "@chat", db))
+    assert short == (2, 9_999, True)
+    assert long[1:] == (9_999, False) and 499 <= long[0] <= 501  # 1000 new ids, about half of ids are messages
