@@ -367,3 +367,16 @@ def test_progress_line_shrinks_the_bar_to_keep_the_rate_limit_visible():
     assert "+94,410" not in wide  # a fresh dump shows the count once
     assert "rate limit 12s" in narrow and "ETA" not in narrow
     assert visible_len(narrow) == 60 and visible_len(wide) - visible_len(narrow) == 6  # only the bar got shorter
+
+
+def test_takeout_is_on_until_extras_are_set(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "ROOT", tmp_path)
+    monkeypatch.delenv("TG_OPTIONS", raising=False)
+    assert config.saved_options() == {"takeout"}
+
+    config.save_options(set())  # everything switched off in the menu
+    assert "TG_OPTIONS=none" in (tmp_path / ".env").read_text(encoding="utf-8")
+    assert config.saved_options() == set()
+
+    config.save_options({"meta"})
+    assert config.saved_options() == {"meta"}

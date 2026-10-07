@@ -57,14 +57,14 @@ out/1234567890_My_Chat/
    uv run dump.py
    ```
 
-The first start asks for `api_id` and `api_hash` and saves them to `.env`. After that it works like this:
+The first start asks for `api_id` and `api_hash` and saves them to `.env`. On the first dump Telegram sends a "Data export request" message to the account: that is the fast export mode, allow it there (see [Extras](#extras)). After that it works like this:
 
 ```
 Accounts:
   1) Alice @alice
   2) Bob
 Output folder: D:\Telegram dumps
-Extras: meta, polls
+Extras: takeout, meta, polls
 [a] add account  [d N] remove  [f] output folder  [x] extras  [Enter] continue >
 Loading your chats… 312 found.
 
@@ -75,8 +75,8 @@ Number, [p] search public chats, or Enter to search again > 1
 
 Forum Club  [forum]  id -1001234567890
 ~152,310 messages
-Dump it with 2 accounts, extras: meta, polls? [Y/n, f = filters]
-[████████░░░░░░░░░░░░]  41%  62,104 saved  +62,104  11,480/min  ETA 7m 40s
+Dump it with 2 accounts, extras: takeout, meta, polls? [Y/n, f = filters]
+[████████░░░░░░░░░░░░]  41%  62,104 saved  112,400/min  ETA 48s
 ```
 
 - Matching chats pop up under the cursor as you type; Tab fills in the highlighted one and Enter picks it.
@@ -90,7 +90,7 @@ Dump it with 2 accounts, extras: meta, polls? [Y/n, f = filters]
 
 ## Extras
 
-All of them are off by default. Switch them on with `x` in the interactive mode, `--with` on the command line, or `TG_OPTIONS` in `.env`.
+`takeout` is on by default, the others are off. Switch them with `x` in the interactive mode, `--with` on the command line (it replaces the saved list), or `TG_OPTIONS` in `.env`; `TG_OPTIONS=none` turns all of them off.
 
 | Extra | Adds | Cost |
 |---|---|---|

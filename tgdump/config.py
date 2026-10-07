@@ -29,11 +29,14 @@ OPTIONS = {
     "comments": "for channels: also dump the comments under posts",
     "takeout": "Telegram's export mode, about 10x faster (allow it once in the Telegram app)",
 }
+DEFAULT_OPTIONS = "takeout"  # when TG_OPTIONS is not set at all; "none" turns everything off
 
 
 def load_settings():
     load_dotenv(ROOT / ".env")
-    return {k: os.getenv(k, "") for k in KEYS}
+    settings = {k: os.getenv(k, "") for k in KEYS}
+    settings["TG_OPTIONS"] = os.getenv("TG_OPTIONS", DEFAULT_OPTIONS)
+    return settings
 
 
 def save_settings(updates):
@@ -62,7 +65,7 @@ def out_dir():
 
 
 def parse_options(value):
-    opts = {o.strip().lower() for o in (value or "").split(",") if o.strip()}
+    opts = {o.strip().lower() for o in (value or "").split(",") if o.strip()} - {"none"}
     unknown = opts - OPTIONS.keys()
     if unknown:
         raise ValueError(f"unknown option(s): {', '.join(sorted(unknown))}; choose from {', '.join(OPTIONS)}")
@@ -74,7 +77,8 @@ def saved_options():
 
 
 def save_options(options):
-    save_settings({"TG_OPTIONS": ",".join(o for o in OPTIONS if o in options)})
+    # an empty value would drop the line from .env and bring the default back
+    save_settings({"TG_OPTIONS": ",".join(o for o in OPTIONS if o in options) or "none"})
 
 
 def parse_proxy(url):
