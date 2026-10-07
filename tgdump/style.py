@@ -59,6 +59,10 @@ def link(path):
     return f"\x1b]8;;{Path(path).resolve().as_uri()}\x1b\\{paint(path, 'blue')}\x1b]8;;\x1b\\"
 
 
+def visible_len(text):
+    return len(CODE_RE.sub("", text))
+
+
 def fit(text, width):
     """Cuts or pads a line to `width` visible characters without breaking its color codes."""
     out, seen = [], 0

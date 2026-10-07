@@ -26,7 +26,7 @@ from .accounts import make_client, new_session_name, open_accounts
 from .config import DATA, OPTIONS, ensure_api_keys, load_settings, out_dir, save_options, save_settings, saved_options
 from .fetch import dump_chat
 from .scope import KINDS, Scope, parse_date
-from .style import fit, keys, kind, link, paint
+from .style import fit, keys, kind, link, paint, visible_len
 from .util import fmt_duration
 
 log = logging.getLogger("dump")
@@ -363,7 +363,7 @@ class ProgressLine:
         self.samples = collections.deque()
         self.frame = 0
 
-    def render(self):
+    def render(self, width=120):
         s, now = self.stats, time.monotonic()
         self.frame += 1
         spin = SPINNER[self.frame % len(SPINNER)]
@@ -388,23 +388,30 @@ class ProgressLine:
             rate, msg_rate = (w1 - w0) / (t1 - t0), (m1 - m0) / (t1 - t0)
 
         share = 1 - work_left / work_total if work_total else 1
-        done = round(share * 20)
-        bar = paint("[" + "█" * done, "blue") + paint("░" * (20 - done) + "]", "dim")
         eta = fmt_duration(work_left / rate) if rate > 0 and work_left else "…" if work_left else "0s"
-        fetched, speed = f"+{s.get('fetched', 0):,}", f"{msg_rate * 60:,.0f}/min"
-        line = (
-            f"{label}{bar} {paint(f'{share:4.0%}', 'bold')}  {s.get('stored', 0):,} saved  {paint(fetched, 'dim')}"
-            f"  {paint(speed, 'green', 'bold')}  {paint('ETA', 'dim')} {eta}"
-        )
-        if self.watch.flood_until > now:
-            line += "  " + paint(f"{spin} rate limit {int(self.watch.flood_until - now) + 1}s", "yellow")
-        return line
+        stored, fetched = s.get("stored", 0), s.get("fetched", 0)
+        tail = f" {paint(f'{share:4.0%}', 'bold')}  {stored:,} saved"
+        if fetched != stored:  # on a repeat run, how many of them are new
+            tail += "  " + paint(f"+{fetched:,}", "dim")
+        tail += "  " + paint(f"{msg_rate * 60:,.0f}/min", "green", "bold")
+        if self.watch.flood_until > now:  # the ETA means little while Telegram makes us wait
+            tail += "  " + paint(f"{spin} rate limit {int(self.watch.flood_until - now) + 1}s", "yellow")
+        else:
+            tail += f"  {paint('ETA', 'dim')} {eta}"
+        # the bar gives up width first, so the numbers stay visible in a narrow window
+        size = max(8, min(20, width - visible_len(label + tail) - 2))
+        done = round(share * size)
+        bar = paint("[" + "█" * done, "blue") + paint("░" * (size - done) + "]", "dim")
+        return label + bar + tail
 
     def draw(self):
         width = shutil.get_terminal_size().columns - 1
         while self.watch.warnings:
             print("\r" + " " * width + "\r" + paint("! " + self.watch.warnings.popleft(), "yellow"))
-        print("\r" + fit(self.render(), width), end="", flush=True)
+        print("\r" + fit(self.render(width), width), end="", flush=True)
+
+    def clear(self):
+        print("\r" + " " * (shutil.get_terminal_size().columns - 1) + "\r", end="")
 
 
 async def run_dump(item, clients, workers, options, scope):
@@ -420,8 +427,10 @@ async def run_dump(item, clients, workers, options, scope):
             line.draw()
             await asyncio.wait({task}, timeout=0.2)
         line.draw()
-        print()
+        if task.exception():
+            print()  # keep the last progress line above the error
         out = task.result()
+        line.clear()  # the line below says it all
         took = fmt_duration(time.monotonic() - started)
         print(
             f"{paint('✓ Done in', 'green')} {paint(took, 'green', 'bold')}{paint(':', 'green')}"

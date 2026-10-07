@@ -7,7 +7,7 @@
 
 <p align="center"><img src="assets/speed.svg" width="100%" alt="Over 100,000 messages per minute: ~115,000 with tg-chat-dump, ~29,000 with Telegram Desktop's export, ~6,000 through the regular API"></p>
 
-<p align="center"><img src="assets/demo.gif" width="100%" alt="Interactive mode: find a chat with live suggestions, then dump 420,912 messages in 3m 48s"><br><sub>A 420,912-message group dumped in 3m 48s with two accounts (the download part is sped up 12×; account names are blurred).</sub></p>
+<p align="center"><img src="assets/demo.gif" width="100%" alt="Interactive mode: find a chat with live suggestions, then dump 421,393 messages in 3m 47s"><br><sub>A 421,393-message group dumped in 3m 47s with two accounts (the download part is sped up 12×; account names are blurred).</sub></p>
 
 Dump an entire Telegram chat into SQLite and a folder per forum topic at **over 100,000 messages a minute**. It runs Telegram's own data-export mode with parallel workers on several accounts, so a chat of several hundred thousand messages is done in minutes: about 4× faster than Telegram Desktop's own export, and a whole forum in one pass instead of topic by topic.
 

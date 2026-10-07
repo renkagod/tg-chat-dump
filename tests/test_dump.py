@@ -303,17 +303,24 @@ def test_chat_search_suggests_while_typing_and_tab_fills_in():
     assert suggest("") == []
 
 
-def test_takeout_ignores_a_blank_takeout_id_in_old_sessions():
+def test_takeout_reuses_an_open_one_and_replaces_a_blank_or_closed_one():
     import asyncio
     import contextlib
     from types import SimpleNamespace
 
+    from telethon import errors
+
     from tgdump.fetch import enter_takeout
 
     class Client:
-        def __init__(self, takeout_id):
+        def __init__(self, takeout_id, closed=False):
             self.session = SimpleNamespace(takeout_id=takeout_id)
+            self.closed = closed
             self.scopes = None
+
+        async def __call__(self, request):
+            if self.closed:
+                raise errors.TakeoutInvalidError(request)
 
         def takeout(self, finalize, **scopes):
             self.scopes = scopes
@@ -323,11 +330,12 @@ def test_takeout_ignores_a_blank_takeout_id_in_old_sessions():
         async with contextlib.AsyncExitStack() as stack:
             await enter_takeout(stack, client)
 
-    blank, open_one = Client(b""), Client(42)
-    asyncio.run(enter(blank))
-    asyncio.run(enter(open_one))
+    blank, open_one, closed = Client(b""), Client(42), Client(43, closed=True)
+    for client in (blank, open_one, closed):
+        asyncio.run(enter(client))
     assert blank.session.takeout_id is None and blank.scopes  # a new takeout is requested
     assert open_one.scopes == {}  # the one left open is reused
+    assert closed.session.takeout_id is None and closed.scopes  # Telegram closed it, so a new one is requested
 
 
 def test_colors_keep_the_progress_line_width_and_turn_off_when_disabled(monkeypatch):
@@ -344,3 +352,18 @@ def test_colors_keep_the_progress_line_width_and_turn_off_when_disabled(monkeypa
     assert style.paint("done", "green", "bold") == "done"
     assert style.keys("[y/N] ") == "[y/N] "
     assert style.fit("abc", 5) == "abc  "
+
+
+def test_progress_line_shrinks_the_bar_to_keep_the_rate_limit_visible():
+    import time
+    from types import SimpleNamespace
+
+    from tgdump.interactive import ProgressLine
+    from tgdump.style import visible_len
+
+    stats = {"phase": "downloading", "work_total": 100, "work_left": 40, "stored": 94_410, "fetched": 94_410}
+    watch = SimpleNamespace(flood_until=time.monotonic() + 12, warnings=[])
+    wide, narrow = ProgressLine(stats, watch).render(200), ProgressLine(stats, watch).render(60)
+    assert "+94,410" not in wide  # a fresh dump shows the count once
+    assert "rate limit 12s" in narrow and "ETA" not in narrow
+    assert visible_len(narrow) == 60 and visible_len(wide) - visible_len(narrow) == 6  # only the bar got shorter
