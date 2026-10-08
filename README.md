@@ -30,7 +30,7 @@ out/1234567890_My_Chat/
 - Run it without arguments for the interactive mode: add or remove accounts, find a chat as you type, watch a progress bar with ETA.
 - A whole forum in one pass. Messages are sorted into topics as they arrive.
 - The chat is split into message-id ranges that several workers download at once. Telegram limits each account separately, so every extra account adds about as much speed as the first.
-- Progress is committed to SQLite every 100 messages. An interrupted run resumes where it stopped, and later runs fetch only new messages.
+- Progress is committed to SQLite every 100 messages. An interrupted run resumes where it stopped, and later runs fetch only new messages and append them to the files, so a repeat run of a large chat takes seconds. When a forum topic is renamed, its folder is renamed too.
 - Optional extras, each a toggle: reactions and views, poll results, formatting with hidden links, comments under channel posts, and Telegram's export mode (see [Extras](#extras)).
 - Filters by date range, author or message type, such as links or documents.
 - On `FLOOD_WAIT` the run sleeps and then continues on its own.
@@ -180,7 +180,7 @@ Each topic folder contains:
 | `grouped_id` | album id |
 | `text_md`, `views`, `forwards`, `replies`, `reactions`, `extra` | only with the matching [extras](#extras) |
 
-The raw data is in `data/<chat id>.sqlite`, with tables `messages`, `topics` and `tasks` (download progress).
+The raw data is in `data/<chat id>.sqlite`, with tables `messages`, `topics`, `tasks` (download progress) and `exports` (what was last written to each folder, so a repeat run only appends). While a dump runs, `.sqlite-wal` and `.sqlite-shm` files sit next to the database; they are part of it and disappear when the run ends, so copy the database only after that.
 
 ## Limitations
 
