@@ -25,7 +25,7 @@ from telethon.tl.types import Channel, Chat, User
 from . import style
 from .accounts import make_client, new_session_name, open_accounts
 from .config import DATA, OPTIONS, ensure_api_keys, load_settings, out_dir, save_options, save_settings, saved_options
-from .fetch import dump_chat, saved_by
+from .fetch import Takeouts, dump_chat, saved_by
 from .scope import KINDS, Scope, parse_date
 from .style import fit, keys, kind, link, paint, visible_len
 from .util import fmt_duration
@@ -199,8 +199,9 @@ async def setup_menu(accounts):
 async def load_chats(accounts):
     print(paint("Loading your chats…", "dim"), end="", flush=True)
     chats = {}
-    for client, me in accounts:
-        async for d in client.iter_dialogs():
+    dialogs = await asyncio.gather(*(client.get_dialogs() for client, _ in accounts))
+    for (_, me), found in zip(accounts, dialogs, strict=True):
+        for d in found:
             e = d.entity
             if isinstance(e, Chat) and e.migrated_to:
                 continue  # the old group behind a supergroup
@@ -463,13 +464,13 @@ class ProgressLine:
         print("\r" + " " * (shutil.get_terminal_size().columns - 1) + "\r", end="")
 
 
-async def run_dump(item, clients, workers, options, scope):
+async def run_dump(item, clients, workers, options, scope, takeouts):
     stats, watch = {}, LogWatch()
     logging.getLogger().addHandler(watch)
     line = ProgressLine(stats, watch)
     started = time.monotonic()
     task = asyncio.create_task(
-        dump_chat(clients, item.target, workers=workers, stats=stats, options=options, scope=scope)
+        dump_chat(clients, item.target, workers=workers, stats=stats, options=options, scope=scope, takeouts=takeouts)
     )
     try:
         while not task.done():
@@ -513,36 +514,38 @@ async def main():
         print(paint(f"! {p}", "yellow"))
     if problems:
         print(paint("  (check TG_PROXY in .env if Telegram is blocked in your network)", "dim"))
-    accounts = [(c, await c.get_me()) for c in clients]
+    accounts = list(zip(clients, await asyncio.gather(*(c.get_me() for c in clients)), strict=True))
     try:
         await setup_menu(accounts)
         chats = await load_chats(accounts)
-        while True:
-            item = await pick_chat(accounts, chats)
-            seen = [(c, me) for c, me in accounts if item.public or me.id in item.accounts]
-            print(f"\n{paint(item.title, 'bold')}  {kind(item.kind)}  {paint(f'id {item.peer_id}', 'dim')}")
-            if not isinstance(item.entity, Channel) and len(seen) > 1:
-                seen = [await pick_account(item, seen)]
-            clients = [c for c, _ in seen]
-            await describe(item, clients[0])
-            n, options = len(clients), saved_options()
-            extras = f", extras: {paint(', '.join(o for o in OPTIONS if o in options), 'green')}" if options else ""
-            who = account_name(seen[0][1]) if n == 1 else paint(f"{n} accounts", "bold")
-            answer = (await ask(f"Dump it with {who}{extras}? {keys('[Y/n, f = filters]')} ")).lower()
-            if answer == "n":
-                continue
-            scope = await ask_filters() if answer == "f" else Scope()
-            try:
-                out = await run_dump(item, clients, 3, options, scope)
-            except ValueError as e:
-                print("\n" + paint(f"Cannot dump: {e}", "red"))
-                continue
-            choice = (await ask(keys("[o] open folder  [n] dump another chat  [Enter] quit > "))).lower()
-            if choice == "o":
-                open_folder(out)
-                choice = (await ask(keys("[n] dump another chat  [Enter] quit > "))).lower()
-            if choice != "n":
-                return
+        # export mode stays open between chats, every account leaves it once on quit
+        async with Takeouts() as takeouts:
+            while True:
+                item = await pick_chat(accounts, chats)
+                seen = [(c, me) for c, me in accounts if item.public or me.id in item.accounts]
+                print(f"\n{paint(item.title, 'bold')}  {kind(item.kind)}  {paint(f'id {item.peer_id}', 'dim')}")
+                if not isinstance(item.entity, Channel) and len(seen) > 1:
+                    seen = [await pick_account(item, seen)]
+                clients = [c for c, _ in seen]
+                await describe(item, clients[0])
+                n, options = len(clients), saved_options()
+                extras = f", extras: {paint(', '.join(o for o in OPTIONS if o in options), 'green')}" if options else ""
+                who = account_name(seen[0][1]) if n == 1 else paint(f"{n} accounts", "bold")
+                answer = (await ask(f"Dump it with {who}{extras}? {keys('[Y/n, f = filters]')} ")).lower()
+                if answer == "n":
+                    continue
+                scope = await ask_filters() if answer == "f" else Scope()
+                try:
+                    out = await run_dump(item, clients, 3, options, scope, takeouts)
+                except ValueError as e:
+                    print("\n" + paint(f"Cannot dump: {e}", "red"))
+                    continue
+                choice = (await ask(keys("[o] open folder  [n] dump another chat  [Enter] quit > "))).lower()
+                if choice == "o":
+                    open_folder(out)
+                    choice = (await ask(keys("[n] dump another chat  [Enter] quit > "))).lower()
+                if choice != "n":
+                    return
     finally:
         for c, _ in accounts:
             await c.disconnect()

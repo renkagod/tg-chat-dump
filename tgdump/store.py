@@ -10,6 +10,7 @@ from telethon.tl.types import MessageActionTopicCreate, MessageReplyHeader
 from .util import iso, plain
 
 CHUNK = 5000  # message ids per task in full-chat mode
+MIN_CHUNK = 500  # smaller tasks are not worth a worker
 BATCH_SIZE = 100  # how often progress is committed
 
 COLUMNS = [
@@ -50,6 +51,9 @@ CREATE TABLE IF NOT EXISTS exports(folder TEXT PRIMARY KEY, max_id INTEGER, rows
 
 def open_db(path):
     db = sqlite3.connect(path)
+    # a commit every BATCH_SIZE messages: with WAL it is a cheap append instead of a full journal sync
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA synchronous=NORMAL")
     db.executescript(SCHEMA)
     have = {c[1] for c in db.execute("PRAGMA table_info(messages)")}
     for name, typ in COLUMNS:  # databases from older versions lack the extra columns
@@ -174,14 +178,18 @@ def clear(db):
     db.executescript("DELETE FROM messages; DELETE FROM tasks; DELETE FROM topics; DELETE FROM exports;")
 
 
-def plan_full(db, first_id, top_id):
-    """Split [first_id, top_id] into ranges; existing ranges are kept, only new ones are added on top."""
+def plan_full(db, first_id, top_id, parts=1):
+    """Split [first_id, top_id] into ranges; existing ranges are kept, only new ones are added on top.
+
+    A short new span is cut into about `parts` ranges, so every worker gets one.
+    """
     # Nothing exists below the first visible message, so those ranges are skipped.
     db.execute("UPDATE tasks SET done=1 WHERE topic IS NULL AND hi < ?", (first_id,))
     start = db.execute("SELECT COALESCE(MAX(hi), 0) FROM tasks WHERE topic IS NULL").fetchone()[0]
     start = max(start, first_id - 1)
-    for lo in range(start, top_id, CHUNK):
-        hi = min(lo + CHUNK, top_id)
+    chunk = min(CHUNK, max(MIN_CHUNK, -(-(top_id - start) // parts)))
+    for lo in range(start, top_id, chunk):
+        hi = min(lo + chunk, top_id)
         db.execute(
             "INSERT INTO tasks(key, topic, lo, hi, cursor) VALUES(?, NULL, ?, ?, ?)", (f"range:{lo}", lo, hi, hi + 1)
         )

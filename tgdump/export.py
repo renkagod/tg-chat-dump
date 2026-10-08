@@ -9,6 +9,7 @@ from .store import BASE_COLUMNS, JSON_COLUMNS, open_db
 from .util import slug
 
 log = logging.getLogger("dump")
+to_json = json.JSONEncoder(ensure_ascii=False).encode  # json.dumps without its setup on every call
 
 
 def text_line(m):
@@ -56,14 +57,39 @@ def chat_folder(chat_id, chat_title, scope=NO_SCOPE, out_root=None):
     return (out_root or out_dir()) / name
 
 
+def topic_folder(out, topic, titles):
+    """A forum topic's folder; its name follows the topic title."""
+    return out / f"{topic}_{slug(titles.get(topic) or ('General' if topic == 1 else ''))}".rstrip("_")
+
+
+def follow_renames(out, old, new):
+    """Rename the folders of renamed topics; False when one cannot be moved, e.g. a file in it is open."""
+    for t in new:
+        was, now = topic_folder(out, t, old), topic_folder(out, t, new)
+        if was == now or not was.exists():
+            continue  # a missing one was already renamed; deleted topics keep their folder
+        if now.exists():
+            return False  # both names exist, so only a rewrite puts the topic back together
+        try:
+            was.rename(now)
+        except OSError as e:
+            log.warning(f"Cannot rename {was.name} to {now.name}, rewriting the export: {e}")
+            return False
+    return True
+
+
 def appendable_since(db, out, titles):
-    """The last exported message id when only newer messages were saved since, so they can be appended."""
+    """The last exported message id when only newer messages were saved since, so they can be appended.
+
+    New topics just get a new folder, and the folders of renamed ones are renamed to match.
+    """
     row = db.execute("SELECT max_id, rows, titles FROM exports WHERE folder=?", (str(out),)).fetchone()
-    if not row or row[2] != titles or not out.is_dir():
-        return None  # never exported here, or a topic was renamed and its folder name changed
-    max_id, rows, _ = row
-    if db.execute("SELECT COUNT(*) FROM messages WHERE id <= ?", (max_id,)).fetchone()[0] != rows:
-        return None  # older messages were added too, e.g. a resumed range, so the order needs a rewrite
+    if not row or not out.is_dir():
+        return None  # never exported here
+    max_id, rows, old = row
+    renamed = follow_renames(out, dict(json.loads(old)), titles)  # also before a rewrite, so no stale folder stays
+    if not renamed or db.execute("SELECT COUNT(*) FROM messages WHERE id <= ?", (max_id,)).fetchone()[0] != rows:
+        return None  # e.g. older messages were added by a resumed range, so the order needs a rewrite
     return max_id
 
 
@@ -78,7 +104,7 @@ def export(db, chat_id, chat_title, out_root=None, scope=NO_SCOPE, folder=None, 
     titles = dict(db.execute("SELECT id, title FROM topics"))
     fingerprint = json.dumps(sorted(titles.items()), ensure_ascii=False)
     cols = [c[1] for c in db.execute("PRAGMA table_info(messages)")]
-    since = None if full or threads else appendable_since(db, out, fingerprint)
+    since = None if full or threads else appendable_since(db, out, titles)
     if threads:
         groups = [(None, "", (), "COALESCE(reply_top, reply_to, id), id")]
     else:
@@ -86,7 +112,7 @@ def export(db, chat_id, chat_title, out_root=None, scope=NO_SCOPE, folder=None, 
         groups = [(t, "WHERE topic_id IS ? AND id > ?", (t, since or 0), "id") for t in topic_ids]
     mode = "w" if since is None else "a"
     for t, where, params, order in groups:
-        target = out if t is None else out / f"{t}_{slug(titles.get(t) or ('General' if t == 1 else ''))}".rstrip("_")
+        target = out if t is None else topic_folder(out, t, titles)
         target.mkdir(parents=True, exist_ok=True)
         with (
             open(target / "messages.jsonl", mode, encoding="utf-8") as fj,
@@ -101,7 +127,7 @@ def export(db, chat_id, chat_title, out_root=None, scope=NO_SCOPE, folder=None, 
                         current = m["thread"]
                         post = (m.get("extra") or {}).get("channel_post") if m["thread"] == m["id"] else None
                         ft.write(f"\n=== {f'post #{post}' if post else f'thread #{current}'} ===\n")
-                fj.write(json.dumps(m, ensure_ascii=False) + "\n")
+                fj.write(to_json(m) + "\n")
                 ft.write(text_line(m))
     max_id, rows = db.execute("SELECT MAX(id), COUNT(*) FROM messages").fetchone()
     db.execute("INSERT OR REPLACE INTO exports VALUES(?, ?, ?, ?)", (str(out), max_id or 0, rows, fingerprint))

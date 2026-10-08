@@ -12,7 +12,7 @@ from . import interactive
 from .accounts import find_account, make_client, open_accounts, resolve
 from .config import DATA, OPTIONS, ensure_api_keys, load_settings, parse_options, save_settings
 from .export import export_db
-from .fetch import dump_chat
+from .fetch import Takeouts, dump_chat
 from .scope import KINDS, Scope, parse_date
 from .util import parse_chat
 
@@ -104,7 +104,10 @@ async def main():
             export_db(db_path, entity.id, utils.get_display_name(entity), scope=a.scope, full=True)
             return
         topics = [int(t) for t in a.topics.split(",")] if a.topics else None
-        await dump_chat(using, chat, topics=topics, workers=a.workers, options=a.options, scope=a.scope)
+        async with Takeouts() as takeouts:  # also covers a channel's comments, dumped right after it
+            await dump_chat(
+                using, chat, topics=topics, workers=a.workers, options=a.options, scope=a.scope, takeouts=takeouts
+            )
     finally:
         for c in clients:
             await c.disconnect()

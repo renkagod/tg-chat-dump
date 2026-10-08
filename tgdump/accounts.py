@@ -37,24 +37,26 @@ def new_session_name():
 async def open_accounts(timeout=30):
     """Connect every data/*.session; returns (logged-in clients, problems).
 
-    Each account gets its own timeout, so one that cannot connect does not hold up the others.
+    Accounts connect in parallel, each with its own timeout, so one that cannot connect does not hold up the others.
     """
-    clients, problems = [], []
-    for name in session_names():
+
+    async def connect(name):
         c = make_client(name)
         try:
             await asyncio.wait_for(c.connect(), timeout)
             if await asyncio.wait_for(c.is_user_authorized(), timeout):
-                clients.append(c)
-                continue
-            problems.append(f"{name}: not logged in")
+                return c, None
+            problem = f"{name}: not logged in"
         except TimeoutError:
-            problems.append(f"{name}: no answer from Telegram in {timeout}s")
+            problem = f"{name}: no answer from Telegram in {timeout}s"
         except OSError as e:
-            problems.append(f"{name}: {e or type(e).__name__}")
-        log.warning(problems[-1])
+            problem = f"{name}: {e or type(e).__name__}"
+        log.warning(problem)
         await c.disconnect()
-    return clients, problems
+        return None, problem
+
+    results = await asyncio.gather(*(connect(n) for n in session_names()))
+    return [c for c, _ in results if c], [p for _, p in results if p]
 
 
 async def resolve(client, chat):

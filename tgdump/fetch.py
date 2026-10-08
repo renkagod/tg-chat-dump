@@ -103,6 +103,36 @@ async def enter_takeout(stack, client):
         return client
 
 
+class Takeouts:
+    """Takeouts kept open across dumps: each account enters export mode once, and all leave it together on exit.
+
+    Opening and closing a takeout is a slow request, so a session that dumps several chats saves seconds per chat.
+    """
+
+    def __init__(self):
+        self.stacks, self.clients = {}, {}
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        stacks, self.stacks, self.clients = list(self.stacks.values()), {}, {}
+        for r in await asyncio.gather(*(s.__aexit__(*exc) for s in stacks), return_exceptions=True):
+            if isinstance(r, Exception):  # a takeout left open is reused or replaced next time
+                log.warning(f"Cannot close the takeout: {r}")
+
+    async def enter(self, pairs):
+        """The (client, chat) pairs with every client switched to its takeout; new takeouts open in parallel."""
+        new = [c for c, _ in pairs if c not in self.clients]
+        for c in new:
+            self.stacks.setdefault(c, contextlib.AsyncExitStack())
+        opened = await asyncio.gather(*(enter_takeout(self.stacks[c], c) for c in new))
+        for c, t in zip(new, opened, strict=True):
+            if t is not c:  # without takeout it is asked again on the next dump
+                self.clients[c] = t
+        return [(self.clients.get(c, c), e) for c, e in pairs]
+
+
 async def busiest(pairs):
     """The (client, chat) pair whose account sees the most messages in the chat; pairs that fail are skipped."""
     best, most = pairs[0], -1
@@ -128,10 +158,12 @@ async def saved_by(client, entity, db):
 
 async def id_bounds(client, entity, scope):
     """First and last message id to scan, narrowed to the scope's dates. Returns (first, top, total)."""
-    latest = await client.get_messages(entity, limit=1)
+    latest, oldest = await asyncio.gather(
+        client.get_messages(entity, limit=1), client.get_messages(entity, limit=1, reverse=True)
+    )
     if not latest:
         raise ValueError("The chat has no messages visible to this account")
-    first = (await client.get_messages(entity, limit=1, reverse=True))[0].id
+    first = oldest[0].id
     top = latest[0].id
     if scope.since:
         before = await client.get_messages(entity, limit=1, offset_date=Scope.day_start(scope.since))
@@ -149,10 +181,20 @@ async def id_bounds(client, entity, scope):
 
 
 async def dump_chat(
-    clients, chat, topics=None, workers=3, stats=None, options=frozenset(), scope=NO_SCOPE, folder=None, threads=False
+    clients,
+    chat,
+    topics=None,
+    workers=3,
+    stats=None,
+    options=frozenset(),
+    scope=NO_SCOPE,
+    folder=None,
+    threads=False,
+    takeouts=None,
 ):
     """Download a chat with every client that can see it, then export it.
 
+    `takeouts` (a Takeouts) keeps export mode open for later dumps; without it, it is closed when this one ends.
     `stats` (a dict) is updated in place for progress display: phase, label, total
     (approximate message count from Telegram), stored, fetched, accounts, and
     work_total/work_left (what is left to scan). Returns the export folder.
@@ -164,11 +206,14 @@ async def dump_chat(
     if topics and scope:
         raise ValueError("Filters work only with whole-chat dumps, not with --topics")
     pairs = []
-    for c in clients:
-        try:
-            pairs.append((c, await resolve(c, chat)))
-        except (ValueError, TypeError):
+    found = await asyncio.gather(*(resolve(c, chat) for c in clients), return_exceptions=True)
+    for c, e in zip(clients, found, strict=True):
+        if isinstance(e, ValueError | TypeError):
             log.warning(f"{utils.get_display_name(await c.get_me())} cannot see this chat, skipping")
+        elif isinstance(e, BaseException):
+            raise e
+        else:
+            pairs.append((c, e))
     if not pairs:
         raise ValueError("None of the accounts can access this chat")
     if not isinstance(pairs[0][1], Channel):
@@ -182,7 +227,8 @@ async def dump_chat(
     db_path = DATA / f"{entity.id}{scope.db_suffix()}.sqlite"
     async with contextlib.AsyncExitStack() as stack:
         if "takeout" in options:
-            pairs = [(await enter_takeout(stack, c), e) for c, e in pairs]
+            own = takeouts or await stack.enter_async_context(Takeouts())
+            pairs = await own.enter(pairs)
         db = open_db(db_path)
         stack.callback(db.close)
         log.info(f"Chat: {title} (id {entity.id}), forum: {'yes' if forum else 'no'}, accounts: {len(pairs)}")
@@ -210,7 +256,7 @@ async def dump_chat(
             first, top, total = await id_bounds(client, entity, scope)
             log.info(f"Messages: ~{total}, ids {first}..{top}")
             if top >= first:
-                plan_full(db, first, top)
+                plan_full(db, first, top, parts=workers * len(pairs))
             keys = [k for (k,) in db.execute("SELECT key FROM tasks WHERE topic IS NULL")]
             stored = db.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
 
@@ -238,7 +284,7 @@ async def dump_chat(
         job = Job(db, forum, options, scope.iter_kwargs())
         helpers = [asyncio.create_task(report(progress, time.monotonic())), asyncio.create_task(mirror())]
         try:
-            await asyncio.gather(*(worker(queue, c, e, job, progress) for c, e in pairs for _ in range(workers)))
+            await asyncio.gather(*(worker(queue, c, e, job, progress) for _ in range(workers) for c, e in pairs))
         finally:
             for h in helpers:
                 h.cancel()
@@ -249,12 +295,12 @@ async def dump_chat(
     out = await asyncio.to_thread(export_db, db_path, entity.id, title, scope=scope, folder=folder, threads=threads)
 
     if "comments" in options and isinstance(entity, Channel) and entity.broadcast:
-        await dump_comments(clients, client, entity, out, workers, stats, options, scope)
+        await dump_comments(clients, client, entity, out, workers, stats, options, scope, takeouts)
     stats["phase"] = "done"
     return out
 
 
-async def dump_comments(clients, client, channel, out, workers, stats, options, scope):
+async def dump_comments(clients, client, channel, out, workers, stats, options, scope, takeouts):
     """Comments under channel posts live in the linked discussion group; dump it into <channel>/comments."""
     full = await client(functions.channels.GetFullChannelRequest(channel))
     linked = full.full_chat.linked_chat_id
@@ -272,6 +318,7 @@ async def dump_comments(clients, client, channel, out, workers, stats, options, 
             scope=scope,
             folder=out / "comments",
             threads=True,
+            takeouts=takeouts,
         )
     except (ValueError, errors.RPCError) as e:
         log.warning(f"Cannot dump the comments: {e}")

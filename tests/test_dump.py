@@ -207,6 +207,17 @@ def test_plan_full_only_adds_new_ranges(db):
     assert pending == [(12_000, 13_500)]
 
 
+def test_plan_full_splits_a_short_new_span_between_workers(db):
+    plan_full(db, 1, 100_000)
+    db.execute("UPDATE tasks SET done=1")
+    plan_full(db, 1, 106_000, parts=6)
+    assert db.execute("SELECT lo, hi FROM tasks WHERE done=0").fetchall() == [
+        (100_000 + i * 1000, 101_000 + i * 1000) for i in range(6)
+    ]
+    plan_full(db, 1, 106_300, parts=6)  # too little for more than one task
+    assert db.execute("SELECT COUNT(*) FROM tasks WHERE done=0").fetchone()[0] == 7
+
+
 def test_plan_topics_resumes_from_newest_stored_message(db):
     plan_topics(db, [10])
     db.execute("UPDATE tasks SET done=1")
@@ -336,6 +347,42 @@ def test_takeout_reuses_an_open_one_and_replaces_a_blank_or_closed_one():
     assert blank.session.takeout_id is None and blank.scopes  # a new takeout is requested
     assert open_one.scopes == {}  # the one left open is reused
     assert closed.session.takeout_id is None and closed.scopes  # Telegram closed it, so a new one is requested
+
+
+def test_takeouts_open_once_per_session_and_close_on_exit():
+    import asyncio
+    import contextlib
+    from types import SimpleNamespace
+
+    from telethon import errors
+
+    from tgdump.fetch import Takeouts
+
+    class Client:
+        def __init__(self, allowed=True):
+            self.session = SimpleNamespace(takeout_id=None)
+            self.allowed, self.opened, self.closed = allowed, 0, 0
+
+        @contextlib.asynccontextmanager
+        async def takeout(self, finalize, **scopes):
+            if not self.allowed:
+                raise errors.TakeoutInitDelayError(None, capture=60)
+            self.opened += 1
+            yield f"takeout of {id(self)}"
+            self.closed += 1
+
+    async def session(a, b):
+        async with Takeouts() as takeouts:
+            first = await takeouts.enter([(a, "chat"), (b, "chat")])
+            second = await takeouts.enter([(a, "other"), (b, "other")])
+            assert a.closed == 0  # still open between dumps
+        return first, second
+
+    a, b = Client(), Client(allowed=False)
+    first, second = asyncio.run(session(a, b))
+    assert first[0][0] == second[0][0] != a and second[0][1] == "other"
+    assert (a.opened, a.closed) == (1, 1)
+    assert first[1][0] is b  # not allowed yet: the plain client, asked again on the next dump
 
 
 def test_colors_keep_the_progress_line_width_and_turn_off_when_disabled(monkeypatch):
@@ -488,3 +535,25 @@ def test_account_is_found_by_session_name_username_or_id():
     assert asyncio.run(find_account(clients, 202)) is side
     with pytest.raises(ValueError):
         asyncio.run(find_account(clients, "nobody"))
+
+
+def test_repeat_export_appends_after_a_new_or_renamed_topic(db, tmp_path):
+    db.execute("INSERT INTO tasks(key, lo, cursor) VALUES('k', 0, 0)")
+    db.execute("INSERT INTO topics VALUES(10, 'Old name')")
+    save(db, "k", [to_row(msg(11, "first", reply_to=topic_reply(10)), forum=True)])
+    out = export(db, 3, "Forum", out_root=tmp_path)
+    old = out / "10_Old_name" / "messages.txt"
+    old.write_text(old.read_text(encoding="utf-8") + "marker\n", encoding="utf-8")
+
+    db.execute("UPDATE topics SET title='New name' WHERE id=10")
+    db.execute("INSERT INTO topics VALUES(20, 'Fresh')")
+    rows = [
+        to_row(msg(21, "second", reply_to=topic_reply(10)), forum=True),
+        to_row(msg(22, "hi", reply_to=topic_reply(20)), forum=True),
+    ]
+    save(db, "k", rows)
+    export(db, 3, "Forum", out_root=tmp_path)
+
+    assert sorted(p.name for p in out.iterdir()) == ["10_New_name", "20_Fresh"]
+    lines = (out / "10_New_name" / "messages.txt").read_text(encoding="utf-8").splitlines()
+    assert lines[1] == "marker" and lines[2].endswith("second")  # the folder was renamed and appended to
