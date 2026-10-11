@@ -88,7 +88,11 @@ def appendable_since(db, out, titles):
         return None  # never exported here
     max_id, rows, old = row
     renamed = follow_renames(out, dict(json.loads(old)), titles)  # also before a rewrite, so no stale folder stays
-    if not renamed or db.execute("SELECT COUNT(*) FROM messages WHERE id <= ?", (max_id,)).fetchone()[0] != rows:
+    # counting the rows up to max_id would read the whole table, seconds on a cold disk cache;
+    # all rows are counted from the small topic index instead, and only the new ones from the table
+    total = db.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    newer = db.execute("SELECT COUNT(*) FROM messages WHERE id > ?", (max_id,)).fetchone()[0]
+    if not renamed or total - newer != rows:
         return None  # e.g. older messages were added by a resumed range, so the order needs a rewrite
     return max_id
 
