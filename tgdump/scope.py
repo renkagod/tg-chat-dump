@@ -2,6 +2,7 @@
 
 import datetime
 import hashlib
+import re
 from dataclasses import dataclass
 
 from telethon import types
@@ -25,8 +26,30 @@ KINDS = {
 }
 
 
-def parse_date(s):
-    return datetime.date.fromisoformat(s) if s else None
+RELATIVE_RE = re.compile(r"(\d+)\s*([dwm])")
+DAYS = {"d": 1, "w": 7, "m": 30}
+
+
+def parse_date(s, end=False, today=None):
+    """YYYY-MM-DD, YYYY-MM, YYYY, or days back: 7d, 2w, 3m. A month or year starts on its first day,
+    or, with end=True (an inclusive end date), ends on its last day."""
+    s = (s or "").strip().lower()
+    if not s:
+        return None
+    if m := RELATIVE_RE.fullmatch(s):
+        return (today or datetime.date.today()) - datetime.timedelta(int(m.group(1)) * DAYS[m.group(2)])
+    try:
+        if re.fullmatch(r"\d{4}", s):
+            return datetime.date(int(s), 12, 31) if end else datetime.date(int(s), 1, 1)
+        if re.fullmatch(r"\d{4}-\d{1,2}", s):
+            year, month = map(int, s.split("-"))
+            first = datetime.date(year, month, 1)
+            if not end:
+                return first
+            return (first + datetime.timedelta(32)).replace(day=1) - datetime.timedelta(1)
+        return datetime.date.fromisoformat(s)
+    except ValueError:
+        raise ValueError(f"cannot read the date {s!r}; use YYYY-MM-DD, YYYY-MM, YYYY or 7d, 2w, 3m") from None
 
 
 @dataclass(frozen=True)
@@ -69,6 +92,20 @@ class Scope:
         if self.kind:
             kw["filter"] = KINDS[self.kind]
         return kw
+
+    def sql(self, sender_id=None):
+        """The dates and author as a WHERE clause over the messages table; `kind` has no local equivalent."""
+        where, params = ["1"], []
+        if self.since:
+            where.append("date >= ?")
+            params.append(self.day_start(self.since).isoformat())
+        if self.until:
+            where.append("date < ?")
+            params.append(self.day_start(self.until + datetime.timedelta(1)).isoformat())
+        if sender_id is not None:
+            where.append("sender_id = ?")
+            params.append(sender_id)
+        return " AND ".join(where), params
 
     @staticmethod
     def day_start(d):

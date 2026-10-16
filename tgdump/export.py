@@ -4,6 +4,7 @@ import json
 import logging
 
 from .config import out_dir
+from .reader import write_reader
 from .scope import NO_SCOPE
 from .store import BASE_COLUMNS, JSON_COLUMNS, open_db
 from .util import slug
@@ -97,10 +98,13 @@ def appendable_since(db, out, titles):
     return max_id
 
 
-def export(db, chat_id, chat_title, out_root=None, scope=NO_SCOPE, folder=None, threads=False, full=False):
+def export(
+    db, chat_id, chat_title, out_root=None, scope=NO_SCOPE, folder=None, threads=False, full=False, reader=False
+):
     """Write <out>/<chat>/<topic id>_<title>/messages.jsonl and messages.txt.
 
     Later runs append only the new messages, unless older ones changed; full=True rewrites everything.
+    reader=True also writes index.html, the offline reader.
     With threads=True (a channel's discussion group) everything goes to one folder,
     ordered by thread, and each thread is headed by the channel post it belongs to.
     """
@@ -137,6 +141,9 @@ def export(db, chat_id, chat_title, out_root=None, scope=NO_SCOPE, folder=None, 
     db.execute("INSERT OR REPLACE INTO exports VALUES(?, ?, ?, ?)", (str(out), max_id or 0, rows, fingerprint))
     db.commit()
     log.info(f"{'Exported' if since is None else 'Appended the new messages'} to {out}")
+    if reader:
+        changed = None if since is None or threads else set(topic_ids)
+        write_reader(db, out, chat_title, titles, topics=changed, threads=threads, since=since)
     return out
 
 

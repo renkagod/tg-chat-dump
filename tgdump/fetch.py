@@ -7,6 +7,7 @@ import logging
 import sqlite3
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 from telethon import errors, functions, utils
 from telethon.tl.functions import InvokeWithTakeoutRequest
@@ -17,8 +18,8 @@ from .accounts import resolve
 from .config import DATA
 from .export import export_db
 from .scope import NO_SCOPE, Scope
-from .store import BATCH_SIZE, clear, open_db, plan_full, plan_topics, range_work_left, save, to_row
-from .util import fmt_duration, iso
+from .store import BATCH_SIZE, COLUMN_NAMES, clear, open_db, plan_full, plan_topics, range_work_left, save, to_row
+from .util import fmt_duration, iso, parse_chat
 
 log = logging.getLogger("dump")
 
@@ -96,11 +97,7 @@ async def enter_takeout(stack, client):
     try:
         return await stack.enter_async_context(client.takeout(finalize=True, **scopes))
     except errors.TakeoutInitDelayError as e:
-        log.warning(
-            "Telegram asks to confirm the data export: open Telegram, allow the request from 'Telegram' "
-            f"in the chat list (or wait {fmt_duration(e.seconds)}). Continuing without takeout for now."
-        )
-        return client
+        return e.seconds  # Telegram waits for the account owner to allow the export
 
 
 class Takeouts:
@@ -111,6 +108,8 @@ class Takeouts:
 
     def __init__(self):
         self.stacks, self.clients = {}, {}
+        self.delayed = {}  # client -> seconds until Telegram allows the export without a confirmation
+        self.declined = set()  # clients told to go on without export mode
 
     async def __aenter__(self):
         return self
@@ -126,11 +125,27 @@ class Takeouts:
         new = [c for c, _ in pairs if c not in self.clients]
         for c in new:
             self.stacks.setdefault(c, contextlib.AsyncExitStack())
+        new = [c for c in new if c not in self.declined]
         opened = await asyncio.gather(*(enter_takeout(self.stacks[c], c) for c in new))
         for c, t in zip(new, opened, strict=True):
-            if t is not c:  # without takeout it is asked again on the next dump
+            if isinstance(t, int):  # without takeout it is asked again on the next dump
+                self.delayed[c] = t
+                log.warning(
+                    "Telegram asks to confirm the data export: open Telegram, allow the request from 'Telegram' "
+                    f"in the chat list (or wait {fmt_duration(t)}). Continuing without takeout for now."
+                )
+            else:
                 self.clients[c] = t
+                self.delayed.pop(c, None)
         return [(self.clients.get(c, c), e) for c, e in pairs]
+
+    def waiting(self, clients):
+        """The clients whose export Telegram waits to have allowed."""
+        return [c for c in clients if c in self.delayed and c not in self.clients and c not in self.declined]
+
+    def decline(self, clients):
+        """Go on without export mode for these clients until the session ends."""
+        self.declined.update(clients)
 
 
 async def busiest(pairs):
@@ -142,6 +157,63 @@ async def busiest(pairs):
             if n > most:
                 best, most = (c, e), n
     return best
+
+
+async def saved_copy(pairs, db_path):
+    """The pair whose account saved the existing copy of a private chat, so a repeat run does not start over."""
+    if len(pairs) < 2 or not db_path.exists():
+        return None
+    with contextlib.closing(sqlite3.connect(db_path)) as db:
+        if not db.execute("SELECT 1 FROM messages LIMIT 1").fetchone():
+            return None
+        for c, e in pairs:
+            with contextlib.suppress(ValueError, TypeError, errors.RPCError):
+                if await saved_by(c, e, db):
+                    return c, e
+    return None
+
+
+def full_dump_done(db_path):
+    """Whether the database holds a finished whole-chat dump, so filters can be applied to it."""
+    if not db_path.exists():
+        return False
+    with contextlib.suppress(sqlite3.Error), contextlib.closing(sqlite3.connect(db_path)) as db:
+        ranges, left = db.execute("SELECT COUNT(*), SUM(done = 0) FROM tasks WHERE topic IS NULL").fetchone()
+        return ranges > 0 and not left
+    return False
+
+
+def copy_scope(whole_path, db_path, scope, sender_id=None):
+    """Fill a filtered database from the whole-chat one, without the network. Returns the message count."""
+    db = open_db(db_path)
+    try:
+        where, params = scope.sql(sender_id)
+        cols = ",".join(COLUMN_NAMES)
+        db.execute("ATTACH DATABASE ? AS whole", (str(whole_path),))
+        db.execute("DELETE FROM messages")
+        db.execute(f"INSERT INTO messages({cols}) SELECT {cols} FROM whole.messages WHERE {where}", params)
+        db.execute("DELETE FROM topics")
+        db.execute("INSERT INTO topics SELECT id, title FROM whole.topics")
+        db.commit()
+        db.execute("DETACH DATABASE whole")
+        return db.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    finally:
+        db.close()
+
+
+def saved_dumps():
+    """Whole-chat dumps in data/ as (chat id, last run time, saved messages), the latest first."""
+    found = []
+    for p in DATA.glob("*.sqlite"):
+        if not p.stem.isdigit():
+            continue  # filtered dumps have a suffix
+        exports = []
+        with contextlib.suppress(sqlite3.Error), contextlib.closing(sqlite3.connect(p)) as db:
+            exports = db.execute("SELECT folder, rows FROM exports").fetchall()
+        if all(Path(f).name == "comments" for f, _ in exports):
+            continue  # a channel's discussion group, updated with the channel; or never exported, before 1.1.4
+        found.append((int(p.stem), p.stat().st_mtime, max((r for _, r in exports), default=0)))
+    return sorted(found, key=lambda d: -d[1])
 
 
 async def saved_by(client, entity, db):
@@ -216,19 +288,39 @@ async def dump_chat(
             pairs.append((c, e))
     if not pairs:
         raise ValueError("None of the accounts can access this chat")
+    db_path = DATA / f"{pairs[0][1].id}{scope.db_suffix()}.sqlite"
     if not isinstance(pairs[0][1], Channel):
         # private chats and basic groups number messages per account, so one account does the whole chat
-        pairs = [await busiest(pairs)]
+        pairs = [await saved_copy(pairs, db_path) or await busiest(pairs)]
     stats["accounts"] = len(pairs)
 
     client, entity = pairs[0]
     title = utils.get_display_name(entity)
     forum = isinstance(entity, Channel) and bool(entity.forum)
-    db_path = DATA / f"{entity.id}{scope.db_suffix()}.sqlite"
+    whole = DATA / f"{entity.id}.sqlite"
+    if scope and not scope.kind and not topics and folder is None and full_dump_done(whole):
+        try:
+            sender = await client.get_peer_id(parse_chat(scope.from_user)) if scope.from_user else None
+        except (ValueError, TypeError, errors.RPCError):
+            sender = None  # an author that cannot be looked up is left to Telegram's search
+        if sender or not scope.from_user:
+            # the whole chat is brought up to date, then the filters are applied to it locally
+            await dump_chat(
+                clients, chat, workers=workers, stats=stats, options=options - {"comments"}, takeouts=takeouts
+            )
+            stats.update(phase="exporting", label="")
+            found = await asyncio.to_thread(copy_scope, whole, db_path, scope, sender)
+            log.info(f"Filters: {scope.tag()}, {found} messages taken from the saved dump of the whole chat")
+            stats.update(stored=found, fetched=0, local=True)
+            out = await asyncio.to_thread(export_db, db_path, entity.id, title, scope=scope, reader="html" in options)
+            stats["phase"] = "done"
+            return out
+
     async with contextlib.AsyncExitStack() as stack:
         if "takeout" in options:
             own = takeouts or await stack.enter_async_context(Takeouts())
             pairs = await own.enter(pairs)
+            stats["no_takeout"] = sum(c not in own.clients.values() for c, _ in pairs)
         db = open_db(db_path)
         stack.callback(db.close)
         log.info(f"Chat: {title} (id {entity.id}), forum: {'yes' if forum else 'no'}, accounts: {len(pairs)}")
@@ -292,7 +384,9 @@ async def dump_chat(
         log.info(f"Fetched this run: {progress['n']}, total in database: {stored + progress['n']}")
 
     stats["phase"] = "exporting"
-    out = await asyncio.to_thread(export_db, db_path, entity.id, title, scope=scope, folder=folder, threads=threads)
+    out = await asyncio.to_thread(
+        export_db, db_path, entity.id, title, scope=scope, folder=folder, threads=threads, reader="html" in options
+    )
 
     if "comments" in options and isinstance(entity, Channel) and entity.broadcast:
         await dump_comments(clients, client, entity, out, workers, stats, options, scope, takeouts)

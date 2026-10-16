@@ -1,5 +1,7 @@
+import asyncio
 import datetime
 import json
+import os
 import sqlite3
 
 import pytest
@@ -17,6 +19,7 @@ from telethon.tl.types import (
     MessageReplyHeader,
     MessageService,
     PeerChannel,
+    PeerUser,
     Poll,
     PollAnswer,
     PollAnswerVoters,
@@ -30,8 +33,10 @@ from telethon.tl.types import (
     TodoList,
 )
 
-from tgdump import config
+from tgdump import config, fetch, style
 from tgdump.export import export
+from tgdump.fetch import Takeouts, copy_scope, full_dump_done
+from tgdump.interactive import LINK_RE, parse_picks
 from tgdump.scope import Scope, parse_date
 from tgdump.store import COLUMN_NAMES, SCHEMA, open_db, plan_full, plan_topics, save, to_row
 from tgdump.util import slug
@@ -416,10 +421,10 @@ def test_progress_line_shrinks_the_bar_to_keep_the_rate_limit_visible():
     assert visible_len(narrow) == 60 and visible_len(wide) - visible_len(narrow) == 6  # only the bar got shorter
 
 
-def test_takeout_is_on_until_extras_are_set(monkeypatch, tmp_path):
+def test_takeout_and_html_are_on_until_extras_are_set(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "ROOT", tmp_path)
     monkeypatch.delenv("TG_OPTIONS", raising=False)
-    assert config.saved_options() == {"takeout"}
+    assert config.saved_options() == {"takeout", "html"}
 
     config.save_options(set())  # everything switched off in the menu
     assert "TG_OPTIONS=none" in (tmp_path / ".env").read_text(encoding="utf-8")
@@ -557,3 +562,121 @@ def test_repeat_export_appends_after_a_new_or_renamed_topic(db, tmp_path):
     assert sorted(p.name for p in out.iterdir()) == ["10_New_name", "20_Fresh"]
     lines = (out / "10_New_name" / "messages.txt").read_text(encoding="utf-8").splitlines()
     assert lines[1] == "marker" and lines[2].endswith("second")  # the folder was renamed and appended to
+
+
+# --- dates, local filters, saved dumps
+
+
+def test_parse_date_reads_months_years_and_days_back():
+    today = datetime.date(2026, 10, 16)
+    assert parse_date("2026-02") == datetime.date(2026, 2, 1)
+    assert parse_date("2026-02", end=True) == datetime.date(2026, 2, 28)
+    assert parse_date("2026-12", end=True) == datetime.date(2026, 12, 31)
+    assert parse_date("2025", end=True) == datetime.date(2025, 12, 31)
+    assert parse_date("7d", today=today) == datetime.date(2026, 10, 9)
+    assert parse_date("2w", today=today) == datetime.date(2026, 10, 2)
+    assert parse_date(" ") is None
+    with pytest.raises(ValueError, match="cannot read the date"):
+        parse_date("yesterday")
+
+
+def dated(id, day, sender=7):
+    when = datetime.datetime(2026, 6, day, 12, tzinfo=datetime.UTC)
+    return Message(id=id, peer_id=PEER, date=when, message=f"m{id}", from_id=PeerUser(sender))
+
+
+def whole_dump(path, messages):
+    db = open_db(path)
+    plan_full(db, 1, max(m.id for m in messages))
+    for (key,) in db.execute("SELECT key FROM tasks").fetchall():
+        save(db, key, [to_row(m, forum=False) for m in messages], done=True)
+    db.close()
+
+
+def test_filters_are_taken_from_the_saved_whole_chat(tmp_path):
+    whole, part = tmp_path / "1.sqlite", tmp_path / "1_x.sqlite"
+    whole_dump(whole, [dated(1, 1), dated(2, 10, sender=8), dated(3, 10), dated(4, 30)])
+    assert full_dump_done(whole)
+    scope = Scope(parse_date("2026-06-10"), parse_date("2026-06-10", end=True))
+    assert copy_scope(whole, part, scope) == 2
+    assert copy_scope(whole, part, scope, sender_id=7) == 1  # a second run replaces the rows
+    assert copy_scope(whole, part, Scope(parse_date("2026-06"), parse_date("2026-06", end=True))) == 4
+
+
+def test_unfinished_dump_is_not_used_for_filters(tmp_path):
+    path = tmp_path / "2.sqlite"
+    db = open_db(path)
+    plan_full(db, 1, 10_000)
+    db.close()
+    assert not full_dump_done(path)
+    assert not full_dump_done(tmp_path / "missing.sqlite")
+
+
+def test_saved_dumps_lists_whole_chats_latest_first(tmp_path, monkeypatch):
+    monkeypatch.setattr(fetch, "DATA", tmp_path)
+    dumps = {"10": "out/10_A", "20": "out/20_B", "30": "out/9_C/comments", "10_abc": "x", "40": None}
+    for name, folder in dumps.items():
+        db = open_db(tmp_path / f"{name}.sqlite")
+        if folder:  # 40 was never exported
+            db.execute("INSERT INTO exports VALUES(?, 0, 5, '[]')", (folder,))
+        db.commit()
+        db.close()
+    os.utime(tmp_path / "10.sqlite", (1, 1))
+    assert [(i, rows) for i, _, rows in fetch.saved_dumps()] == [(20, 5), (10, 5)]
+
+
+def test_chat_links_are_recognized():
+    m = LINK_RE.fullmatch("https://t.me/c/1234567/89")
+    assert m and m.group("c") == "1234567"
+    assert LINK_RE.fullmatch("t.me/somegroup/12?single").group("name") == "somegroup"
+    assert LINK_RE.fullmatch("https://t.me/+AbC-12").group("invite") == "+AbC-12"
+    assert LINK_RE.fullmatch("@somegroup").group("at") == "somegroup"
+    assert not LINK_RE.fullmatch("some group")
+
+
+def test_api_keys_are_asked_again_until_they_look_right(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ROOT", tmp_path)
+    for k in ("TG_API_ID", "TG_API_HASH"):
+        monkeypatch.delenv(k, raising=False)
+    answers = iter(["abc", "12345", "nothex", "0123456789abcdef0123456789abcdef"])
+    monkeypatch.setattr("builtins.input", lambda _: next(answers))
+    config.ensure_api_keys()
+    assert "TG_API_ID=12345" in (tmp_path / ".env").read_text()
+    for k in ("TG_API_ID", "TG_API_HASH"):
+        monkeypatch.delenv(k, raising=False)
+
+
+def test_takeouts_wait_for_the_export_to_be_allowed(monkeypatch):
+    allowed = set()
+
+    async def fake_enter(stack, client):
+        return f"takeout-{client}" if client in allowed else 3600
+
+    monkeypatch.setattr(fetch, "enter_takeout", fake_enter)
+
+    async def go():
+        t = Takeouts()
+        assert await t.enter([("a", 1), ("b", 2)]) == [("a", 1), ("b", 2)]
+        assert t.waiting(["a", "b"]) == ["a", "b"]
+        t.decline(["b"])
+        allowed.update("ab")
+        assert await t.enter([("a", 1), ("b", 2)]) == [("takeout-a", 1), ("b", 2)]
+        assert t.waiting(["a", "b"]) == []
+
+    asyncio.run(go())
+
+
+def test_several_dumps_can_be_picked_at_once():
+    assert parse_picks("3", 7) == [3]
+    assert parse_picks("4 5 6", 7) == parse_picks("4,5, 6", 7) == parse_picks("4-6", 7) == [4, 5, 6]
+    assert parse_picks("456", 7) == []  # one number, not 4, 5 and 6
+    assert parse_picks("12", 15) == [12]
+    assert parse_picks("2 2 1", 7) == [2, 1]
+    assert parse_picks("8", 7) == parse_picks("0", 7) == parse_picks("-", 7) == []
+    assert parse_picks("vless", 7) is None and parse_picks("", 7) is None
+
+
+def test_file_links_keep_letters_outside_ascii_on_windows(monkeypatch, tmp_path):
+    monkeypatch.setattr(style.sys, "platform", "win32")
+    uri = style.file_uri(tmp_path / "1_OverSecure_Чат 50%" / "index.html")
+    assert uri.startswith("file:///") and uri.endswith("/1_OverSecure_Чат%2050%25/index.html")

@@ -23,15 +23,22 @@ from telethon import errors, functions, utils
 from telethon.tl.types import Channel, Chat, User
 
 from . import style
-from .accounts import make_client, new_session_name, open_accounts
+from .accounts import login, make_client, new_session_name, open_accounts
 from .config import DATA, OPTIONS, ensure_api_keys, load_settings, out_dir, save_options, save_settings, saved_options
-from .fetch import Takeouts, dump_chat, saved_by
+from .fetch import Takeouts, dump_chat, saved_by, saved_dumps
 from .scope import KINDS, Scope, parse_date
 from .style import fit, keys, kind, link, paint, visible_len
 from .util import fmt_duration
 
 log = logging.getLogger("dump")
 FLOOD_RE = re.compile(r"Sleeping (?:early )?for (\d+)s")
+LINK_RE = re.compile(
+    r"@(?P<at>\w{4,})|(?:https?://)?(?:www\.)?(?:t|telegram)\.me/(?:s/)?"
+    r"(?:c/(?P<c>\d+)|(?P<invite>\+[\w-]+|joinchat/[\w-]+)|(?P<name>\w+))(?:/\d+)*/?(?:\?\S*)?",
+    re.IGNORECASE,
+)
+SETTINGS = ("/", "/s", "/settings")
+QUIT = ("q", "/q", "quit", "exit")
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 SHOW = 15  # chats listed per search
 PEEK = 100  # newest messages fetched to count what a repeat dump will add
@@ -41,6 +48,7 @@ MENU_STYLE = {
     "completion-menu.completion.current": "bg:#3e4451 ansibrightblue bold",
     "completion-menu.meta.completion.current": "bg:#3e4451",
 }
+dumped = False  # whether a dump ran, for the goodbye line
 
 
 async def ask(prompt=""):
@@ -51,6 +59,15 @@ async def ask(prompt=""):
 def account_name(me):
     name = utils.get_display_name(me) or str(me.id)
     return f"{name} {paint('@' + me.username, 'dim')}" if me.username else name
+
+
+def ago(timestamp):
+    seconds = time.time() - timestamp
+    if seconds < 3600:
+        return f"{max(1, int(seconds // 60))}m ago"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)}h ago"
+    return f"{int(seconds // 86400)}d ago"
 
 
 @dataclass
@@ -105,15 +122,14 @@ class LogWatch(logging.Handler):
             self.warnings.append(msg)
 
 
-# --- accounts ---------------------------------------------------------------
+# --- accounts and settings --------------------------------------------------
 
 
 async def add_account(accounts):
     client = make_client(new_session_name())
-    print("Log in with a phone number (Ctrl+C to cancel).")
+    print("Log in to a Telegram account (Ctrl+C to cancel).")
     try:
-        await client.start()  # asks for the phone, the code and the two-step password
-        me = await client.get_me()
+        me = await login(client)
     except (Exception, KeyboardInterrupt) as e:  # noqa: BLE001 - any failure just cancels the login
         print(paint(f"Login cancelled: {e or type(e).__name__}", "red"))
         await client.disconnect()
@@ -166,17 +182,28 @@ async def options_menu():
             save_options(on ^ {list(OPTIONS)[int(choice) - 1]})
 
 
+def extras_text():
+    extras = ", ".join(o for o in OPTIONS if o in saved_options())
+    return paint(extras, "green") if extras else paint("none", "dim")
+
+
+def print_status(accounts):
+    """What the next dump will use, in two lines; the settings are one / away, as the search prompt says."""
+    print(f"{paint('Accounts:', 'dim')} {', '.join(account_name(me) for _, me in accounts)}")
+    print(f"{paint('Extras:', 'dim')} {extras_text()}   {paint('Output:', 'dim')} {link(out_dir())}")
+
+
 async def setup_menu(accounts):
     while True:
-        print("\n" + paint("Accounts:", "bold"))
+        print("\n" + paint("Settings", "bold") + paint(" (saved for next time)", "dim"))
+        print(paint("Accounts:", "dim"))
         for i, (_, me) in enumerate(accounts, 1):
             print(f"  {paint(f'{i})', 'blue')} {account_name(me)}")
         if not accounts:
             print(paint("  (none yet)", "dim"))
         print(f"{paint('Output folder:', 'dim')} {out_dir()}")
-        extras = ", ".join(o for o in OPTIONS if o in saved_options())
-        print(f"{paint('Extras:', 'dim')} {paint(extras, 'green') if extras else paint('none', 'dim')}")
-        choice = await ask(keys("[a] add account  [d N] remove  [f] output folder  [x] extras  [Enter] continue > "))
+        print(f"{paint('Extras:', 'dim')} {extras_text()}")
+        choice = await ask(keys("[a] add account  [d N] remove  [f] output folder  [x] extras  [Enter] back > "))
         if not choice:
             if accounts:
                 return
@@ -191,6 +218,16 @@ async def setup_menu(accounts):
             await options_menu()
         else:
             print(paint("Type a, d and a number, f, x, or press Enter.", "yellow"))
+
+
+async def first_account(accounts):
+    """The first run has no accounts: log one in right away. False when the user gives up."""
+    print(paint("No accounts yet. Log in to the Telegram account whose chats you want to dump.", "bold"))
+    while not accounts:
+        await add_account(accounts)
+        if not accounts and (await ask(keys("[Enter] try again  [q] quit > "))).lower() == "q":
+            return False
+    return True
 
 
 # --- chats ------------------------------------------------------------------
@@ -224,6 +261,30 @@ async def search_public(client, q, chats):
     return found
 
 
+async def from_link(q, client, chats):
+    """The chat a t.me link or an @username names. None when q is neither, False when it cannot be opened."""
+    m = LINK_RE.fullmatch(q)
+    if not m:
+        return None
+    if m.group("c"):  # t.me/c/<id>/<message>: a private chat, only reachable through your own chats
+        item = chats.get(int(f"-100{m.group('c')}"))
+        if not item:
+            print(paint("This private chat is not in your chats; join it first.", "yellow"))
+        return item or False
+    name = m.group("at") or m.group("name")
+    if name:
+        for c in chats.values():
+            if c.username and c.username.lower() == name.lower():
+                return c
+    try:
+        e = await client.get_entity(name or q)
+    except (ValueError, TypeError, errors.RPCError) as e:
+        print(paint(f"Cannot open {q}: {e}", "yellow"))
+        return False
+    pid = utils.get_peer_id(e)
+    return chats.get(pid) or chats.setdefault(pid, make_item(e, public=True))
+
+
 def seen_by(c, n_accounts):
     """How many accounts can dump the chat: green when all of them, yellow when only some."""
     if c.public:
@@ -242,6 +303,44 @@ def print_chats(items, n_accounts):
         print(paint(f"      …and {len(items) - SHOW} more, type more of the name", "dim"))
 
 
+def dumped_items(chats):
+    """Chats dumped before, latest first, as (item, last run time, saved messages)."""
+    by_id = {}
+    for c in chats.values():
+        by_id.setdefault(c.entity.id, c)
+    return [(by_id[i], when, rows) for i, when, rows in saved_dumps() if i in by_id]
+
+
+def parse_picks(choice, n):
+    """Numbers picked from a list of n: "3", "2 5 7", "4-6". Digits run together are one number, never several.
+
+    None when the answer is not numbers at all, [] when some number is not on the list.
+    """
+    if not re.fullmatch(r"[\d\s,-]+", choice.strip()):
+        return None
+    picks = []
+    for part in filter(None, re.split(r"[\s,]+", choice.strip())):
+        if m := re.fullmatch(r"(\d+)-(\d+)", part):
+            a, b = sorted((int(m.group(1)), int(m.group(2))))
+            picks += range(a, b + 1)
+        elif part.isdigit():
+            picks.append(int(part))
+        else:
+            return []
+    if not picks or not all(1 <= p <= n for p in picks):
+        return []
+    return list(dict.fromkeys(picks))
+
+
+def print_dumps(dumps):
+    print(paint("Your dumps:", "bold"))
+    for i, (c, when, rows) in enumerate(dumps[:SHOW], 1):
+        num, title = paint(f"{i:>2})", "blue"), paint(c.title, "bold")
+        print(f"  {num} {title}  {kind(c.kind)}  {paint(f'{rows:,} saved · {ago(when)}', 'dim')}")
+    if len(dumps) > SHOW:
+        print(paint(f"      …and {len(dumps) - SHOW} more, find them by name", "dim"))
+
+
 class ChatCompleter(Completer):
     """Lists matching chats under the cursor while the name is being typed; Tab fills one in."""
 
@@ -251,7 +350,7 @@ class ChatCompleter(Completer):
 
     def get_completions(self, document, complete_event):
         q = document.text_before_cursor.strip()
-        if not q:
+        if not q or q.startswith("/") or "t.me/" in q.lower():
             return
         for c in self.chats.values():
             if c.matches(q):
@@ -264,6 +363,8 @@ class ChatCompleter(Completer):
 
 
 def chat_prompt(chats, n_accounts):
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return None  # piped input gets a plain prompt
     bindings = KeyBindings()
 
     @bindings.add("tab")
@@ -284,40 +385,77 @@ def chat_prompt(chats, n_accounts):
 
 
 async def ask_chat(session):
-    about = " (name, @username or id; Tab completes, Enter lists all):"
-    prompt = "\n" + paint("Search chat", "bold") + paint(about, "dim") + " "
+    hint = (
+        f"{paint('[Enter]', 'blue')} {paint('your dumps', 'dim')}   "
+        f"{paint('[/]', 'blue')} {paint('settings: accounts, extras, output folder', 'dim')}   "
+        f"{paint('[q]', 'blue')} {paint('quit', 'dim')}"
+    )
+    about = paint(" (name, @username, id or t.me link):", "dim")
+    prompt = f"\n{hint}\n{paint('Search chat', 'bold')}{about} "
     if session is None:
         return await ask(prompt)
     return (await session.prompt_async(ANSI(prompt))).strip()
 
 
-async def pick_chat(accounts, chats):
-    tty = sys.stdin.isatty() and sys.stdout.isatty()  # piped input gets a plain prompt
-    session = chat_prompt(chats, len(accounts)) if tty else None
+async def pick_chat(accounts, chats, session):
+    """A ChatItem, SETTINGS, QUIT, or ("update", items) to update those dumps."""
+    client, q = accounts[0][0], None
     while True:
-        q = await ask_chat(session)
+        if q is None:
+            q = await ask_chat(session)
+        if q.lower() in SETTINGS:
+            return SETTINGS
+        if q.lower() in QUIT:
+            return QUIT
+        if not q and (dumps := dumped_items(chats)):
+            print_dumps(dumps)
+            hint = f"Number or several (2 5 7, 4-6), [u] update all {len(dumps)}, a name, or [q] quit > "
+            choice = await ask(keys(hint))
+            if choice.lower() in QUIT:
+                return QUIT
+            if choice.lower() == "u":
+                return "update", [c for c, _, _ in dumps]
+            picks = parse_picks(choice, min(len(dumps), SHOW))
+            if picks and len(picks) == 1:
+                return dumps[picks[0] - 1][0]
+            if picks:
+                return "update", [dumps[i - 1][0] for i in picks]
+            if picks == []:  # numbers, but not all of them on the list
+                print(paint(f"Pick numbers from 1 to {min(len(dumps), SHOW)}.", "yellow"))
+                continue
+            q = choice or None
+            continue
         exact = [c for c in chats.values() if q and c.title.lower() == q.lower()]
         if len(exact) == 1:  # picked from the suggestions
             return exact[0]
         items = [c for c in chats.values() if not q or c.matches(q)]
         if not items and q:
+            found = await from_link(q, client, chats)
+            if found:
+                return found
+            if found is False:
+                q = None
+                continue
             print(paint("Not in your chats, searching public ones…", "dim"))
-            items = await search_public(accounts[0][0], q, chats)
+            items = await search_public(client, q, chats)
         if not items:
             print(paint("Nothing found.", "yellow"))
+            q = None
             continue
         print_chats(items, len(accounts))
-        hint = "Number, [p] search public chats, or Enter to search again > " if q else "Number or Enter > "
+        hint = "Number, [p] search public chats, or type to search again > " if q else "Number or Enter > "
         choice = await ask(keys(hint))
         if choice.lower() == "p" and q:
-            items = await search_public(accounts[0][0], q, chats)
+            items = await search_public(client, q, chats)
             if not items:
                 print(paint("No public chats found.", "yellow"))
+                q = None
                 continue
             print_chats(items, len(accounts))
             choice = await ask(keys("Number or Enter > "))
         if choice.isdigit() and 1 <= int(choice) <= min(len(items), SHOW):
             return items[int(choice) - 1]
+        q = None if choice.isdigit() or choice.lower() == "p" else choice or None
 
 
 async def count_new(client, target, db):
@@ -340,17 +478,23 @@ async def count_new(client, target, db):
 
 async def pick_account(item, accounts):
     """Private chats and basic groups are dumped by one account: each account has its own copy of them."""
-    counts = []
-    for c, _ in accounts:
-        try:
-            counts.append((await c.get_messages(item.target, limit=0)).total)
-        except (ValueError, TypeError, errors.RPCError):
-            counts.append(0)
-    order = sorted(range(len(accounts)), key=lambda i: -counts[i])
+    counts, saved = [], []
+    db_path = DATA / f"{item.entity.id}.sqlite"
+    with contextlib.closing(sqlite3.connect(db_path)) if db_path.exists() else contextlib.nullcontext() as db:
+        for c, _ in accounts:
+            try:
+                counts.append((await c.get_messages(item.target, limit=0)).total)
+                saved.append(bool(db) and await saved_by(c, item.target, db))
+            except (ValueError, TypeError, errors.RPCError):
+                counts.append(0)
+                saved.append(False)
+    has_copy = any(saved) and not all(saved)  # all True means nothing is saved yet
+    order = sorted(range(len(accounts)), key=lambda i: (-(has_copy and saved[i]), -counts[i]))
     print(paint("Every account has its own copy of this chat:", "dim"))
     for n, i in enumerate(order, 1):
         count = f"{counts[i]:,} message{'s' * (counts[i] != 1)}"
-        print(f"  {paint(f'{n:>2})', 'blue')} {account_name(accounts[i][1])}  {count}")
+        mark = paint("  saved by this one, only new messages are fetched", "green") if has_copy and saved[i] else ""
+        print(f"  {paint(f'{n:>2})', 'blue')} {account_name(accounts[i][1])}  {count}{mark}")
     while True:
         choice = await ask(keys("Account number (Enter = 1) > "))
         if not choice:
@@ -393,15 +537,38 @@ async def describe(item, client):
 async def ask_filters():
     """Filters for this dump only; an empty answer means no filter."""
     print(paint("Filters for this dump", "bold") + paint(" (Enter skips any of them):", "dim"))
+    print(paint("  dates: 2026-03-14, a month 2026-03, a year 2026, or back from today 7d, 2w, 3m", "dim"))
     while True:
         try:
-            since = parse_date(await ask("  from date, YYYY-MM-DD: "))
-            until = parse_date(await ask("  to date (inclusive), YYYY-MM-DD: "))
+            since = parse_date(await ask("  from date: "))
+            until = parse_date(await ask("  to date, inclusive: "), end=True)
             from_user = await ask("  only from user (@username or id): ") or None
             kind = await ask(f"  only type ({', '.join(KINDS)}): ") or None
             return Scope(since, until, from_user, kind)
         except ValueError as e:
             print(paint(f"  {e}, try again", "yellow"))
+
+
+async def confirm_takeout(takeouts, accounts):
+    """Open export mode before the dump; when Telegram wants it allowed first, wait for that instead of going slow."""
+    clients = [c for c, _ in accounts if c not in takeouts.clients and c not in takeouts.declined]
+    if not clients:
+        return
+    print(paint("Starting Telegram's export mode…", "dim"))
+    await takeouts.enter([(c, None) for c in clients])
+    while waiting := takeouts.waiting(clients):
+        names = ", ".join(account_name(me) for c, me in accounts if c in waiting)
+        wait = fmt_duration(max(takeouts.delayed[c] for c in waiting))
+        print(paint(f"Telegram wants the data export allowed first ({names}).", "yellow"))
+        print("  Open Telegram with this account: the chat 'Telegram' has a data export request, tap Allow.")
+        print(paint(f"  Otherwise it opens by itself in {wait}; until then a dump is about 10x slower.", "dim"))
+        choice = await ask(keys("[Enter] allowed, check again  [s] go on slower > "))
+        if choice.lower() == "s":
+            takeouts.decline(waiting)
+            return
+        await takeouts.enter([(c, None) for c in waiting])
+    if all(c in takeouts.clients for c in clients):
+        print(paint("Export mode is on.", "green"))
 
 
 # --- progress ---------------------------------------------------------------
@@ -444,6 +611,8 @@ class ProgressLine:
         if fetched != stored:  # on a repeat run, how many of them are new
             tail += "  " + paint(f"+{fetched:,}", "dim")
         tail += "  " + paint(f"{msg_rate * 60:,.0f}/min", "green", "bold")
+        if s.get("no_takeout"):  # why it is slow
+            tail += "  " + paint("no takeout", "yellow")
         if self.watch.flood_until > now:  # the ETA means little while Telegram makes us wait
             tail += "  " + paint(f"{spin} rate limit {int(self.watch.flood_until - now) + 1}s", "yellow")
         else:
@@ -465,6 +634,8 @@ class ProgressLine:
 
 
 async def run_dump(item, clients, workers, options, scope, takeouts):
+    global dumped
+    dumped = True
     stats, watch = {}, LogWatch()
     logging.getLogger().addHandler(watch)
     line = ProgressLine(stats, watch)
@@ -482,21 +653,70 @@ async def run_dump(item, clients, workers, options, scope, takeouts):
         out = task.result()
         line.clear()  # the line below says it all
         took = fmt_duration(time.monotonic() - started)
-        print(
-            f"{paint('✓ Done in', 'green')} {paint(took, 'green', 'bold')}{paint(':', 'green')}"
-            f" +{stats.get('fetched', 0):,} new, {stats.get('stored', 0):,} saved in total\n{link(out)}"
-        )
+        if stats.get("local"):
+            what = f"{stats.get('stored', 0):,} messages, filtered from the saved dump"
+        else:
+            what = f"+{stats.get('fetched', 0):,} new, {stats.get('stored', 0):,} saved in total"
+        print(f"{paint('✓ Done in', 'green')} {paint(took, 'green', 'bold')}{paint(':', 'green')} {what}")
+        reader = out / "index.html"
+        print(f"{link(reader) if reader.exists() else link(out)}")
         return out
     finally:
         logging.getLogger().removeHandler(watch)
         task.cancel()
 
 
-def open_folder(path):
+async def safe_dump(item, clients, options, scope, takeouts):
+    """run_dump that reports a failure and returns None, so the session goes on with the next chat."""
+    try:
+        return await run_dump(item, clients, 3, options, scope, takeouts)
+    except ValueError as e:
+        print("\n" + paint(f"Cannot dump: {e}", "red"))
+    except Exception as e:  # noqa: BLE001 - a network error or a bug must not end the session
+        log.exception("Dump failed")
+        print("\n" + paint(f"The dump stopped: {e or type(e).__name__}", "red"))
+        print(paint(f"  Details are in {DATA / 'dump.log'}; the next run picks up where this one stopped.", "dim"))
+    return None
+
+
+def open_path(path):
     if sys.platform == "win32":
         os.startfile(path)  # noqa: S606
     else:
         subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", str(path)])
+
+
+def seen_accounts(item, accounts):
+    return [(c, me) for c, me in accounts if item.public or me.id in item.accounts]
+
+
+async def update_all(items, accounts, takeouts):
+    """Fetch the new messages of every chat dumped before, one after another."""
+    options = saved_options()
+    if "takeout" in options:
+        await confirm_takeout(takeouts, accounts)
+    failed = 0
+    for n, item in enumerate(items, 1):
+        print(f"\n{paint(f'{n}/{len(items)}', 'dim')} {paint(item.title, 'bold')}  {kind(item.kind)}")
+        clients = [c for c, _ in seen_accounts(item, accounts)]
+        if not clients or not await safe_dump(item, clients, options, Scope(), takeouts):
+            failed += 1
+    tail = paint(f", {failed} failed", "yellow") if failed else ""
+    print(f"\n{paint('✓ Updated', 'green')} {paint(len(items) - failed, 'bold')} of {len(items)} chats{tail}")
+
+
+async def after_dump(out):
+    """What to do once a dump is done; True to dump another chat."""
+    reader = out / "index.html"
+    menu = "[o] open in the browser  [f] open the folder" if reader.exists() else "[o] open the folder"
+    while True:
+        choice = (await ask(keys(f"{menu}  [n] dump another chat  [Enter] quit > "))).lower()
+        if choice == "o":
+            open_path(reader if reader.exists() else out)
+        elif choice == "f" and reader.exists():
+            open_path(out)
+        else:
+            return choice == "n"
 
 
 # --- main -------------------------------------------------------------------
@@ -516,13 +736,29 @@ async def main():
         print(paint("  (check TG_PROXY in .env if Telegram is blocked in your network)", "dim"))
     accounts = list(zip(clients, await asyncio.gather(*(c.get_me() for c in clients)), strict=True))
     try:
-        await setup_menu(accounts)
+        if not accounts and not await first_account(accounts):
+            return
+        print_status(accounts)
         chats = await load_chats(accounts)
+        session = chat_prompt(chats, len(accounts))
         # export mode stays open between chats, every account leaves it once on quit
         async with Takeouts() as takeouts:
             while True:
-                item = await pick_chat(accounts, chats)
-                seen = [(c, me) for c, me in accounts if item.public or me.id in item.accounts]
+                item = await pick_chat(accounts, chats, session)
+                if item == QUIT:
+                    return
+                if item == SETTINGS:
+                    before = {me.id for _, me in accounts}
+                    await setup_menu(accounts)
+                    if {me.id for _, me in accounts} != before:  # other accounts see other chats
+                        chats = await load_chats(accounts)
+                        session = chat_prompt(chats, len(accounts))
+                    print_status(accounts)
+                    continue
+                if isinstance(item, tuple):
+                    await update_all(item[1], accounts, takeouts)
+                    continue
+                seen = seen_accounts(item, accounts)
                 print(f"\n{paint(item.title, 'bold')}  {kind(item.kind)}  {paint(f'id {item.peer_id}', 'dim')}")
                 if not isinstance(item.entity, Channel) and len(seen) > 1:
                     seen = [await pick_account(item, seen)]
@@ -535,16 +771,10 @@ async def main():
                 if answer == "n":
                     continue
                 scope = await ask_filters() if answer == "f" else Scope()
-                try:
-                    out = await run_dump(item, clients, 3, options, scope, takeouts)
-                except ValueError as e:
-                    print("\n" + paint(f"Cannot dump: {e}", "red"))
-                    continue
-                choice = (await ask(keys("[o] open folder  [n] dump another chat  [Enter] quit > "))).lower()
-                if choice == "o":
-                    open_folder(out)
-                    choice = (await ask(keys("[n] dump another chat  [Enter] quit > "))).lower()
-                if choice != "n":
+                if "takeout" in options:
+                    await confirm_takeout(takeouts, seen)
+                out = await safe_dump(item, clients, options, scope, takeouts)
+                if out and not await after_dump(out):
                     return
     finally:
         for c, _ in accounts:

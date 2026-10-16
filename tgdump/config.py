@@ -1,6 +1,7 @@
 """Settings in .env and the optional extras."""
 
 import os
+import re
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -28,8 +29,9 @@ OPTIONS = {
     "markdown": "formatting and hidden links, as Markdown in text_md",
     "comments": "for channels: also dump the comments under posts",
     "takeout": "Telegram's export mode, about 10x faster (allow it once in the Telegram app)",
+    "html": "index.html in the chat folder to read the dump in a browser, offline",
 }
-DEFAULT_OPTIONS = "takeout"  # when TG_OPTIONS is not set at all; "none" turns everything off
+DEFAULT_OPTIONS = "takeout,html"  # when TG_OPTIONS is not set at all; "none" turns everything off
 
 
 def load_settings():
@@ -51,11 +53,27 @@ def save_settings(updates):
         os.environ[k] = v
 
 
+API_KEYS = {
+    "TG_API_ID": (re.compile(r"\d{3,12}"), "api_id is a number, like 1234567"),
+    "TG_API_HASH": (re.compile(r"[0-9a-fA-F]{32}"), "api_hash is 32 letters and digits, 0-9 and a-f"),
+}
+
+
 def ensure_api_keys():
+    """Ask for api_id and api_hash until they look right; a broken value in .env is asked again too."""
     s = load_settings()
-    missing = {k: input(f"{k} (from my.telegram.org): ").strip() for k in ("TG_API_ID", "TG_API_HASH") if not s[k]}
-    if missing:
-        save_settings(missing)
+    bad = [k for k, (pattern, _) in API_KEYS.items() if not pattern.fullmatch(s[k])]
+    if not bad:
+        return
+    print("Telegram needs an app of your own: open https://my.telegram.org, log in,")
+    print("choose API development tools, create an app (any name) and copy its api_id and api_hash.")
+    found = {}
+    for k in bad:
+        pattern, hint = API_KEYS[k]
+        while not pattern.fullmatch(value := input(f"{k.removeprefix('TG_').lower()}: ").strip()):
+            print(f"  {hint}, try again")
+        found[k] = value
+    save_settings(found)
 
 
 def out_dir():

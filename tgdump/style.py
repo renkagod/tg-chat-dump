@@ -52,11 +52,20 @@ def kind(name):
     return paint(f"[{name}]", KIND_COLORS.get(name, "dim"))
 
 
+def file_uri(path):
+    """A file:// URI; on Windows letters outside ASCII stay as they are, since the shell does not find
+    a file whose percent-encoded name is not ASCII."""
+    path = Path(path).resolve()
+    if sys.platform != "win32":
+        return path.as_uri()
+    return "file:///" + path.as_posix().replace("%", "%25").replace(" ", "%20").replace("#", "%23")
+
+
 def link(path):
     """A path that Ctrl+click opens, in terminals that support links."""
     if not enabled:
         return str(path)
-    return f"\x1b]8;;{Path(path).resolve().as_uri()}\x1b\\{paint(path, 'blue')}\x1b]8;;\x1b\\"
+    return f"\x1b]8;;{file_uri(path)}\x1b\\{paint(path, 'blue')}\x1b]8;;\x1b\\"
 
 
 def visible_len(text):

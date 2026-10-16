@@ -2,10 +2,14 @@
 
 import asyncio
 import contextlib
+import getpass
+import io
 import logging
+import sys
 from pathlib import Path
 
-from telethon import TelegramClient
+import qrcode
+from telethon import TelegramClient, errors
 from telethon.tl.types import PeerChannel, PeerUser
 
 from .config import DATA, load_settings, parse_proxy
@@ -79,3 +83,48 @@ async def find_account(clients, ref):
         if ref in {Path(c.session.filename).stem.lower(), str(me.id), (me.username or "").lower()}:
             return c
     raise ValueError(f"no logged-in account matches {ref!r}")
+
+
+def qr_text(url):
+    """The QR code as text, light modules as blocks so it reads on a dark terminal."""
+    qr = qrcode.QRCode(border=2)
+    qr.add_data(url)
+    out = io.StringIO()
+    qr.print_ascii(out=out, invert=True)
+    return out.getvalue()
+
+
+async def qr_login(client):
+    """Log in by scanning a QR code with a phone where the account is already logged in."""
+    qr = await client.qr_login()
+    print("In Telegram on your phone: Settings > Devices > Link Desktop Device, then scan this code.")
+    drawn = 0
+    while True:
+        text = qr_text(qr.url)
+        if drawn and sys.stdout.isatty():  # draw the new code over the old one
+            print(f"\x1b[{drawn}A", end="")
+        print(text, end="", flush=True)
+        drawn = text.count("\n")
+        try:
+            return await qr.wait()
+        except TimeoutError:
+            await qr.recreate()  # a code lives about 30 seconds
+        except errors.SessionPasswordNeededError:
+            break
+    while True:  # two-step verification
+        try:
+            return await client.sign_in(password=getpass.getpass("Two-step verification password: "))
+        except errors.PasswordHashInvalidError:
+            print("Wrong password, try again")
+
+
+async def login(client):
+    """Log a new session in: a QR code by default, or the phone number and code. Returns the account."""
+    await client.connect()
+    if not await client.is_user_authorized():
+        how = input("Log in with [Enter] a QR code from the Telegram app or [p] a phone number > ").strip().lower()
+        if how == "p":
+            await client.start()  # asks for the phone, the code and the two-step password
+        else:
+            await qr_login(client)
+    return await client.get_me()
