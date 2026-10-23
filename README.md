@@ -4,6 +4,7 @@
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
 [![Telethon](https://img.shields.io/badge/built%20with-Telethon-26A5E4.svg)](https://github.com/LonamiWebs/Telethon)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Donate](https://img.shields.io/badge/Donate-crypto-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/renkagod/.github/blob/main/DONATE.md)
 
 <p align="center"><img src="assets/speed.svg" width="100%" alt="Over 100,000 messages per minute: ~115,000 with tg-chat-dump, ~29,000 with Telegram Desktop's export, ~6,000 through the regular API"></p>
 
@@ -213,6 +214,10 @@ uv run ruff check . && uv run ruff format --check .
 The code is in `tgdump/`: `fetch` downloads, `store` turns messages into database rows, `export` writes the folders, `cli` and `interactive` are the two front ends.
 
 Issues and pull requests are welcome. Please run the tests and linters before opening a PR.
+
+## Support
+
+If this project is useful to you, you can support it with crypto: [donation addresses](https://github.com/renkagod/.github/blob/main/DONATE.md).
 
 ## License
 
