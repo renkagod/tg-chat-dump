@@ -6,6 +6,9 @@ import sqlite3
 
 import pytest
 from telethon.tl.types import (
+    JsonNumber,
+    JsonObject,
+    JsonObjectValue,
     Message,
     MessageActionTopicCreate,
     MessageEntityBold,
@@ -31,9 +34,11 @@ from telethon.tl.types import (
     TodoCompletion,
     TodoItem,
     TodoList,
+    User,
 )
+from telethon.tl.types.help import AppConfig
 
-from tgdump import config, fetch, style
+from tgdump import accounts, config, fetch, style
 from tgdump.export import export
 from tgdump.fetch import Takeouts, copy_scope, full_dump_done
 from tgdump.interactive import LINK_RE, parse_picks
@@ -664,6 +669,38 @@ def test_takeouts_wait_for_the_export_to_be_allowed(monkeypatch):
         assert t.waiting(["a", "b"]) == []
 
     asyncio.run(go())
+
+
+def test_frozen_accounts_are_skipped_with_the_appeal_deadline(monkeypatch):
+    until = int(datetime.datetime(2026, 11, 22, tzinfo=datetime.UTC).timestamp())
+
+    class Client:
+        def __init__(self, name):
+            self.frozen = name == "acc2"
+
+        async def connect(self):
+            pass
+
+        async def disconnect(self):
+            pass
+
+        async def is_user_authorized(self):
+            return True
+
+        async def get_me(self):
+            return User(id=2, first_name="Side")
+
+        async def __call__(self, request):
+            keys = [JsonObjectValue("freeze_until_date", JsonNumber(until))] if self.frozen else []
+            return AppConfig(hash=0, config=JsonObject(keys))
+
+    monkeypatch.setattr(accounts, "session_names", lambda: ["acc1", "acc2"])
+    monkeypatch.setattr(accounts, "make_client", Client)
+    clients, problems = asyncio.run(accounts.open_accounts())
+    assert [c.frozen for c in clients] == [False]
+    assert problems == [
+        "acc2 (Side): frozen by Telegram, skipped; appeal via @SpamBot before 2026-11-22 or the account is deleted"
+    ]
 
 
 def test_several_dumps_can_be_picked_at_once():

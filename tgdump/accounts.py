@@ -6,10 +6,11 @@ import getpass
 import io
 import logging
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import qrcode
-from telethon import TelegramClient, errors
+from telethon import TelegramClient, errors, functions, utils
 from telethon.tl.types import PeerChannel, PeerUser
 
 from .config import DATA, load_settings, parse_proxy
@@ -48,9 +49,17 @@ async def open_accounts(timeout=30):
         c = make_client(name)
         try:
             await asyncio.wait_for(c.connect(), timeout)
-            if await asyncio.wait_for(c.is_user_authorized(), timeout):
+            if not await asyncio.wait_for(c.is_user_authorized(), timeout):
+                problem = f"{name}: not logged in"
+            elif until := await asyncio.wait_for(frozen_until(c), timeout):
+                # a frozen account is read-only: it cannot even look up a public chat by its username
+                me = await c.get_me()
+                problem = (
+                    f"{name} ({utils.get_display_name(me)}): frozen by Telegram, skipped; "
+                    f"appeal via @SpamBot before {until:%Y-%m-%d} or the account is deleted"
+                )
+            else:
                 return c, None
-            problem = f"{name}: not logged in"
         except TimeoutError:
             problem = f"{name}: no answer from Telegram in {timeout}s"
         except OSError as e:
@@ -61,6 +70,17 @@ async def open_accounts(timeout=30):
 
     results = await asyncio.gather(*(connect(n) for n in session_names()))
     return [c for c, _ in results if c], [p for _, p in results if p]
+
+
+async def frozen_until(client):
+    """When a frozen account is deleted unless appealed, or None when the account is not frozen."""
+    try:
+        config = await client(functions.help.GetAppConfigRequest(hash=0))
+    except errors.RPCError:
+        return None
+    values = {v.key: v.value for v in getattr(config.config, "value", [])}
+    until = values.get("freeze_until_date")
+    return datetime.fromtimestamp(until.value, UTC) if until else None
 
 
 async def resolve(client, chat):

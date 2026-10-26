@@ -144,7 +144,7 @@ uv run dump.py --login acc2   # log in once, saved to data/acc2.session
 
 It shows a QR code to scan in Telegram on a phone where that account is logged in (*Settings → Devices → Link Desktop Device*); type `p` instead to log in with the phone number and code.
 
-Each `data/*.session` file is picked up automatically. Accounts that are not logged in or are not members of the chat are skipped with a warning. Private chats and small groups are numbered separately in every account, so they are always dumped by one account; on the command line it is the one that saved the chat before, or else the one with the most messages, unless `--account` names another.
+Each `data/*.session` file is picked up automatically. Accounts that are not logged in or are not members of the chat are skipped with a warning. So is an account that Telegram has frozen: it is read-only and cannot even look up a public chat, and the warning gives the date by which to appeal via @SpamBot before Telegram deletes it. Private chats and small groups are numbered separately in every account, so they are always dumped by one account; on the command line it is the one that saved the chat before, or else the one with the most messages, unless `--account` names another.
 
 ### Performance
 

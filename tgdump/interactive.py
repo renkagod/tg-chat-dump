@@ -732,7 +732,7 @@ async def main():
     clients, problems = await open_accounts()
     for p in problems:
         print(paint(f"! {p}", "yellow"))
-    if problems:
+    if any("frozen by Telegram" not in p for p in problems):
         print(paint("  (check TG_PROXY in .env if Telegram is blocked in your network)", "dim"))
     accounts = list(zip(clients, await asyncio.gather(*(c.get_me() for c in clients)), strict=True))
     try:
