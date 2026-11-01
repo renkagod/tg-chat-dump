@@ -25,13 +25,13 @@ KEYS = ("TG_API_ID", "TG_API_HASH", "TG_CHAT", "TG_PROXY", "TG_OUT", "TG_OPTIONS
 # Optional extras, switched on with TG_OPTIONS in .env, --with, or the interactive menu.
 OPTIONS = {
     "meta": "reactions, views, forwards and reply counts",
-    "polls": "poll and checklist contents with results",
     "markdown": "formatting and hidden links, as Markdown in text_md",
     "comments": "for channels: also dump the comments under posts",
     "takeout": "Telegram's export mode, about 10x faster (allow it once in the Telegram app)",
     "html": "index.html in the chat folder to read the dump in a browser, offline",
 }
 DEFAULT_OPTIONS = "takeout,html"  # when TG_OPTIONS is not set at all; "none" turns everything off
+RETIRED = {"polls"}  # always on now; still accepted, so older settings and commands keep working
 
 
 def load_settings():
@@ -83,7 +83,7 @@ def out_dir():
 
 
 def parse_options(value):
-    opts = {o.strip().lower() for o in (value or "").split(",") if o.strip()} - {"none"}
+    opts = {o.strip().lower() for o in (value or "").split(",") if o.strip()} - {"none"} - RETIRED
     unknown = opts - OPTIONS.keys()
     if unknown:
         raise ValueError(f"unknown option(s): {', '.join(sorted(unknown))}; choose from {', '.join(OPTIONS)}")

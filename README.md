@@ -33,7 +33,8 @@ out/1234567890_My_Chat/
 - A whole forum in one pass. Messages are sorted into topics as they arrive.
 - The chat is split into message-id ranges that several workers download at once. Telegram limits each account separately, so every extra account adds about as much speed as the first.
 - Progress is committed to SQLite every 100 messages. An interrupted run resumes where it stopped, and later runs fetch only new messages and append them to the files, so a repeat run of a large chat takes seconds. When a forum topic is renamed, its folder is renamed too.
-- Optional extras, each a toggle: reactions and views, poll results, formatting with hidden links, comments under channel posts, and Telegram's export mode (see [Extras](#extras)).
+- Everything the Telegram app shows with a message, not only its text: rich messages laid out in blocks, file names and sizes, link previews, polls and checklists, places and contacts, buttons with their links, quotes in replies, replies to other chats, forward sources, author signatures and admin titles, fact checks, service actions with their details.
+- Optional extras, each a toggle: reactions and views, formatting with hidden links, comments under channel posts, and Telegram's export mode (see [Extras](#extras)).
 - Filters by date range, author or message type, such as links or documents.
 - On `FLOOD_WAIT` the run sleeps and then continues on its own.
 - SOCKS5 and HTTP proxies, for networks where Telegram is blocked.
@@ -95,13 +96,12 @@ Dump it with 2 accounts, extras: takeout, html? [Y/n, f = filters]
 | Extra | Adds | Cost |
 |---|---|---|
 | `meta` | `reactions` (`{"👍": 12}`), `views`, `forwards`, `replies` | none, it is already in every message |
-| `polls` | poll question, answers, votes; checklist items and which are done | none |
 | `markdown` | `text_md`: the text as Markdown, with bold, links behind words, mentions | none |
 | `comments` | for a channel: the comments under its posts, from the linked discussion group, in `comments/`, grouped by post | a second dump of the discussion group |
 | `takeout` | runs the dump in Telegram's data-export mode, the one Telegram Desktop uses; it skips the usual rate limits, about 10× faster (see [Performance](#performance)) | the first time, Telegram asks you to allow the export in the app (the interactive mode waits for it), otherwise it opens after 24 hours; until then the dump runs at normal speed |
 | `html` | `index.html` in the chat folder: read the dump in a browser, offline, with topics, search, replies and jumps to a date | a few seconds on the first run for a chat of several hundred thousand messages, then a fraction of a second |
 
-Turning an extra on later does not touch messages that are already saved. A new run adds it to new messages only.
+Turning an extra on later does not touch messages that are already saved. A new run adds it to new messages only; `--refetch` adds it to the saved ones too. Polls and checklists are always saved now; the old `polls` extra is still accepted and does nothing.
 
 ## Filters
 
@@ -126,8 +126,9 @@ uv run dump.py @somegroup                            # whole chat (or only new m
 uv run dump.py https://t.me/somegroup                # the same; --chat @somegroup works too
 uv run dump.py --update-all                          # new messages of every chat dumped before, for cron
 uv run dump.py --chat @somegroup --topics 12,37      # only these forum topics
-uv run dump.py --chat @somegroup --with meta,polls   # with extras
+uv run dump.py --chat @somegroup --with meta,markdown   # with extras
 uv run dump.py --chat @somegroup --export-only       # rebuild the folders from the database, no network
+uv run dump.py --chat @somegroup --refetch           # download the saved messages again, see below
 uv run dump.py --login acc2                          # add another account (see below)
 uv run dump.py --chat @somegroup --workers 2         # workers per account, default 3
 uv run dump.py --chat @friend --account acc2         # only this account: session name, @username or id
@@ -173,6 +174,8 @@ Each topic folder contains:
 [2026-03-14 09:01:12] #1042 Alice: hi everyone  [👍 3 · 120 views]
 [2026-03-14 09:02:40] #1043 Bob (reply to #1042): <MessageMediaPhoto> look at this
 [2026-03-14 09:05:00] #1044 Carol: <poll> Lunch? | Pizza (4) | Sushi (2) | 6 votes
+[2026-03-14 09:06:10] #1045 Dave [admin] (reply to #1042) (quoting «hi»): <MessageMediaDocument: notes.pdf, 1.2 MB> the notes
+  [buttons: Open <https://example.com/notes>]
 ```
 
 **`messages.jsonl`**: one JSON object per message:
@@ -189,13 +192,18 @@ Each topic folder contains:
 | `media` | media type (`MessageMediaPhoto`, `MessageMediaDocument`, ...) |
 | `action` | service message type (`MessageActionTopicCreate`, ...) |
 | `grouped_id` | album id |
-| `text_md`, `views`, `forwards`, `replies`, `reactions`, `extra` | only with the matching [extras](#extras) |
+| `extra` | everything else the app shows, see below |
+| `text_md`, `views`, `forwards`, `replies`, `reactions` | only with the matching [extras](#extras) |
+
+`extra` holds only what a message has: `file` (name, size, type, duration, performer and title, sticker emoji), `webpage` (link preview: site, title, description), `poll`, `todo`, `geo`, `venue`, `contact`, `dice`, `game`, `invoice`, `story`, `paid_media`, `media_info` (the fields of any other media), `buttons` (rows of `{text, url}`), `links` (addresses hidden behind words), `reply` (`quote`, and `peer`/`chat`/`from` for a reply to another chat), `fwd` (source id, date, signature), `author` (signature of a channel post), `rank` (admin title), `via_bot`, `action` (fields of a service message), `factcheck`, `restricted`, `effect`, `paid_stars`, `pinned`, `channel_post`. `rich: true` marks a rich message: Telegram's block layout of paragraphs, quotes, lists and tables, saved in `text` as plain text (and as Markdown in `text_md` with the `markdown` extra).
+
+Dumps made by versions before 1.3.0 lack some of this: rich messages there have an empty text, and media, buttons and replies have no details. `--refetch` downloads the saved messages again and fills that in; it takes about as long as the first dump, updates rows in place (messages deleted from Telegram since stay), and rewrites the folders. Ctrl+C stops it, and the next run goes on with it.
 
 The raw data is in `data/<chat id>.sqlite`, with tables `messages`, `topics`, `tasks` (download progress) and `exports` (what was last written to each folder, so a repeat run only appends). While a dump runs, `.sqlite-wal` and `.sqlite-shm` files sit next to the database; they are part of it and disappear when the run ends, so copy the database only after that.
 
 ## Limitations
 
-- Downloads text and metadata only. Media files are recorded by type and not downloaded.
+- Downloads text and metadata only. Media files are recorded by type and details (file name, size, link preview, place...) and not downloaded.
 - The account only sees what Telegram shows it: if the chat hides history from new members, older messages are not available.
 - `--topics` cannot fetch the General topic on its own; the full-chat mode covers it.
 
@@ -211,7 +219,7 @@ uv run pytest
 uv run ruff check . && uv run ruff format --check .
 ```
 
-The code is in `tgdump/`: `fetch` downloads, `store` turns messages into database rows, `export` writes the folders, `cli` and `interactive` are the two front ends.
+The code is in `tgdump/`: `fetch` downloads, `store` turns messages into database rows (with `details` for what goes into `extra` and `rich` for rich messages), `export` writes the folders, `reader` the offline page, `cli` and `interactive` are the two front ends.
 
 Issues and pull requests are welcome. Please run the tests and linters before opening a PR.
 

@@ -250,6 +250,17 @@ def test_polls_and_checklists_are_kept_without_channel_post(db, tmp_path):
     assert len(rows[2]) == 4
 
 
+def test_details_reach_the_page_and_hidden_links_only_without_markdown(db, tmp_path):
+    links = [{"text": "here", "url": "https://example.com"}]
+    details = {"buttons": [[{"text": "Get", "url": "https://example.com/get"}]], "links": links, "rich": True}
+    add(db, 1, text="click here", extra=json.dumps(details))
+    add(db, 2, text="click here", text_md="click [here](https://example.com)", extra=json.dumps({"links": links}))
+    write_reader(db, tmp_path, "Chat", {})
+    rows, _ = data(tmp_path, "all")
+    assert rows[0][13] == {"buttons": details["buttons"], "links": links}
+    assert rows[1][3] == "click [here](https://example.com)" and len(rows[1]) == 4
+
+
 def test_threads_mode_orders_by_thread(db, tmp_path):
     add(db, 1, text="post one", extra=json.dumps({"channel_post": 100}))
     add(db, 2, text="post two", extra=json.dumps({"channel_post": 101}))

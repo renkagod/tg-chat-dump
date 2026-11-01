@@ -18,7 +18,19 @@ from .accounts import resolve
 from .config import DATA
 from .export import export_db
 from .scope import NO_SCOPE, Scope
-from .store import BATCH_SIZE, COLUMN_NAMES, clear, open_db, plan_full, plan_topics, range_work_left, save, to_row
+from .store import (
+    BATCH_SIZE,
+    COLUMN_NAMES,
+    clear,
+    open_db,
+    outdated,
+    plan_full,
+    plan_topics,
+    range_work_left,
+    refetch,
+    save,
+    to_row,
+)
 from .util import fmt_duration, iso, parse_chat
 
 log = logging.getLogger("dump")
@@ -263,8 +275,11 @@ async def dump_chat(
     folder=None,
     threads=False,
     takeouts=None,
+    again=False,
 ):
     """Download a chat with every client that can see it, then export it.
+
+    again=True downloads the saved messages again too (--refetch), to fill in what older versions did not keep.
 
     `takeouts` (a Takeouts) keeps export mode open for later dumps; without it, it is closed when this one ends.
     `stats` (a dict) is updated in place for progress display: phase, label, total
@@ -306,13 +321,21 @@ async def dump_chat(
         if sender or not scope.from_user:
             # the whole chat is brought up to date, then the filters are applied to it locally
             await dump_chat(
-                clients, chat, workers=workers, stats=stats, options=options - {"comments"}, takeouts=takeouts
+                clients,
+                chat,
+                workers=workers,
+                stats=stats,
+                options=options - {"comments"},
+                takeouts=takeouts,
+                again=again,
             )
             stats.update(phase="exporting", label="")
             found = await asyncio.to_thread(copy_scope, whole, db_path, scope, sender)
             log.info(f"Filters: {scope.tag()}, {found} messages taken from the saved dump of the whole chat")
             stats.update(stored=found, fetched=0, local=True)
-            out = await asyncio.to_thread(export_db, db_path, entity.id, title, scope=scope, reader="html" in options)
+            out = await asyncio.to_thread(
+                export_db, db_path, entity.id, title, scope=scope, reader="html" in options, full=again
+            )
             stats["phase"] = "done"
             return out
 
@@ -331,6 +354,11 @@ async def dump_chat(
         if not isinstance(entity, Channel) and not await saved_by(client, entity, db):
             log.warning("The saved copy came from another account, downloading the chat again")
             clear(db)
+        if again:
+            refetch(db, topics)
+            log.info("Downloading the saved messages again")
+        elif outdated(db):
+            log.info("Messages saved by an older version lack details it did not keep; --refetch fills them in")
         if forum:
             await fetch_topics(client, entity, db)
         if topics:
@@ -352,6 +380,8 @@ async def dump_chat(
             keys = [k for (k,) in db.execute("SELECT key FROM tasks WHERE topic IS NULL")]
             stored = db.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
 
+        if again:
+            stored = 0  # every saved message is fetched again, so none of them counts as already there
         pending = [k for k in keys if not db.execute("SELECT done FROM tasks WHERE key=?", (k,)).fetchone()[0]]
         queue = asyncio.Queue()
         for k in pending:
@@ -381,7 +411,8 @@ async def dump_chat(
             for h in helpers:
                 h.cancel()
             sync()
-        log.info(f"Fetched this run: {progress['n']}, total in database: {stored + progress['n']}")
+        saved = db.execute("SELECT COUNT(*) FROM messages").fetchone()[0] if again else stored + progress["n"]
+        log.info(f"Fetched this run: {progress['n']}, total in database: {saved}")
 
     stats["phase"] = "exporting"
     out = await asyncio.to_thread(
@@ -389,12 +420,12 @@ async def dump_chat(
     )
 
     if "comments" in options and isinstance(entity, Channel) and entity.broadcast:
-        await dump_comments(clients, client, entity, out, workers, stats, options, scope, takeouts)
+        await dump_comments(clients, client, entity, out, workers, stats, options, scope, takeouts, again)
     stats["phase"] = "done"
     return out
 
 
-async def dump_comments(clients, client, channel, out, workers, stats, options, scope, takeouts):
+async def dump_comments(clients, client, channel, out, workers, stats, options, scope, takeouts, again=False):
     """Comments under channel posts live in the linked discussion group; dump it into <channel>/comments."""
     full = await client(functions.channels.GetFullChannelRequest(channel))
     linked = full.full_chat.linked_chat_id
@@ -413,6 +444,7 @@ async def dump_comments(clients, client, channel, out, workers, stats, options, 
             folder=out / "comments",
             threads=True,
             takeouts=takeouts,
+            again=again,
         )
     except (ValueError, errors.RPCError) as e:
         log.warning(f"Cannot dump the comments: {e}")

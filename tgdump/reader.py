@@ -16,12 +16,14 @@ _encode = json.JSONEncoder(ensure_ascii=False, separators=(",", ":"), check_circ
 _ESCAPES = (("<", "\\u003c"), (">", "\\u003e"), ("&", "\\u0026"), ("\u2028", "\\u2028"), ("\u2029", "\\u2029"))
 
 # a row is [id, unix date, sender index in its part, text, reply to, forwarded from, media, action, album,
-#           edited, reactions, views, replies, poll/todo, thread head]; trailing nulls are dropped
+#           edited, reactions, views, replies, details, thread head]; trailing nulls are dropped
 _SELECT = (
     "SELECT id, CAST(strftime('%s', date) AS INTEGER), sender_id, sender, COALESCE(NULLIF(text_md, ''), text),"
     " reply_to, reply_top, topic_id, fwd_from, media, action, grouped_id, edit_date IS NOT NULL,"
-    " reactions, views, replies, extra FROM messages"
+    " reactions, views, replies, extra, NULLIF(text_md, '') IS NOT NULL FROM messages"
 )
+# details the page does not show; "links" is left out too when the Markdown text already has them
+_UNSHOWN = {"channel_post", "rich", "boosts", "effect", "pinned"}
 
 
 def js_literal(obj):
@@ -84,7 +86,7 @@ def _write_list(db, data, key, topic, threads, first=0):
     try:
         for r in db.execute(sql, params):
             mid, date, sid, sname, text, reply, top, tid, fwd, media, action, grouped, edited, *meta = r
-            reactions, views, replies, extra = meta
+            reactions, views, replies, extra, md = meta
             if part is None or part.rows == PART_ROWS:
                 if part:
                     part.close()
@@ -100,7 +102,7 @@ def _write_list(db, data, key, topic, threads, first=0):
                     post = ex.get("channel_post") if ex and thread == mid else None
                     head = [1, post] if post else [0, thread]
             if ex:
-                ex = {x: ex[x] for x in ("poll", "todo") if x in ex} or None
+                ex = {k: v for k, v in ex.items() if k not in _UNSHOWN and not (md and k == "links")} or None
             row = [
                 mid,
                 date or 0,
@@ -429,6 +431,27 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1
 .alb, .alb:hover { background: var(--fill2); }
 .alb:not(.alb-s)::before { content: ""; position: absolute; left: 56px; right: 8px; top: 0; height: 1px;
   background: var(--sep); }
+.rank { font-size: 12px; color: var(--text3); overflow-wrap: anywhere; }
+a.chip { text-decoration: none; }
+.cd { color: var(--text3); font-weight: 400; overflow-wrap: anywhere; }
+.wp { display: block; max-width: 520px; margin: 4px 0 2px; padding: 4px 10px 5px 9px; color: inherit;
+  border-left: 3px solid var(--accent); border-radius: 4px 8px 8px 4px; background: var(--fill2);
+  font-size: 13.5px; line-height: 1.4; text-decoration: none; }
+.ws { font-weight: 600; color: var(--accent); overflow-wrap: anywhere; }
+.wt { font-weight: 600; overflow-wrap: anywhere; }
+.wd { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text2); display: -webkit-box;
+  -webkit-line-clamp: 8; -webkit-box-orient: vertical; overflow: hidden; }
+.kbd { display: grid; gap: 4px; max-width: 520px; margin: 5px 0 2px; }
+.kbr { display: flex; gap: 4px; }
+.kb { flex: 1 1 0; min-width: 0; padding: 6px 10px; border-radius: 8px; background: var(--fill); color: var(--text2);
+  font-size: 13px; font-weight: 500; text-align: center; text-decoration: none; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+a.kb { color: var(--accent); }
+.note { max-width: 520px; margin: 4px 0 2px; padding: 6px 10px; border-radius: 8px; background: var(--fill2);
+  font-size: 13px; color: var(--text2); white-space: pre-wrap; overflow-wrap: anywhere; }
+.note b { color: var(--text); font-weight: 600; }
+.note a { color: var(--accent); text-decoration: none; }
+.svc small { display: block; font-size: 12px; font-weight: 400; color: var(--text3); }
 .svc { display: flex; justify-content: center; margin: 10px 0; position: relative; }
 .svc > span { max-width: min(560px, 86%); text-align: center; font-weight: 500; line-height: 1.4;
   overflow-wrap: anywhere; border-radius: 13px; padding: 4px 12px; }
@@ -631,6 +654,52 @@ const ACTIONS = {
   RequestedPeer: "shared a chat", WebViewDataSent: "sent data to a bot", BotAllowed: "allowed the bot to message",
 };
 const actionText = (a) => ACTIONS[a] || a.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase();
+const safeUrl = (u) => (typeof u === "string" && /^https?:\/\//i.test(u) ? u : null);
+function out(tag, cls, url) {  // a link that opens in a new tab when url is safe, a plain element otherwise
+  const e = h(url ? "a" : tag, cls);
+  if (url) { e.href = url; e.target = "_blank"; e.rel = "noopener noreferrer"; }
+  return e;
+}
+function sizeText(n) {
+  const u = ["B", "KB", "MB", "GB"];
+  let i = 0;
+  while (n >= 1024 && i < 3) { n /= 1024; i++; }
+  return (i ? n.toFixed(1) : n) + " " + u[i];
+}
+const dur = (s) => { s = Math.round(s); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
+const join = (xs, sep) => xs.filter((x) => x != null && x !== "").join(sep || " · ");
+function fieldsText(o) {  // plain fields of a details object, for types the page has no layout for
+  const v = (x) => (x && typeof x === "object"
+    ? (Array.isArray(x) ? x.map(v).join(", ") : (x._ || "") + (Object.keys(x).some((k) => k !== "_")
+      ? " (" + fieldsText(x) + ")" : "")) : String(x));
+  return Object.entries(o).filter(([k]) => k !== "_").map(([k, x]) => `${k.replace(/_/g, " ")}: ${v(x)}`).join(", ");
+}
+function osm(g) {
+  const lat = Number(g.lat), lon = Number(g.long);
+  if (g.lat == null || !isFinite(lat) || !isFinite(lon)) return null;
+  return `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lon}#map=16/${lat}/${lon}`;
+}
+function mediaInfo(ex) {
+  const f = ex.file;
+  if (f) {
+    return join([f.name || f.emoji, join([f.performer, f.title], " – "), f.duration ? dur(f.duration) : "",
+      f.size ? sizeText(f.size) : ""]);
+  }
+  if (ex.geo) return `${ex.geo.lat}, ${ex.geo.long}`;
+  if (ex.venue) return join([ex.venue.title, ex.venue.address]);
+  if (ex.contact) return join([join([ex.contact.first_name, ex.contact.last_name], " "), ex.contact.phone]);
+  if (ex.dice) return `${ex.dice.emoticon} ${ex.dice.value}`;
+  if (ex.game) return ex.game.title || "";
+  if (ex.invoice) {
+    const i = ex.invoice;
+    return join([i.title, i.amount != null ? `${i.amount} ${i.currency || ""}` : ""]);
+  }
+  if (ex.story) return ex.story.caption || "";
+  if (ex.paid_media) return `${ex.paid_media.stars} ⭐`;
+  if (ex.photo) return fieldsText(ex.photo);
+  if (ex.media_info) return fieldsText(ex.media_info);
+  return "";
+}
 
 function hash32(s) {
   let x = 0;
@@ -651,7 +720,8 @@ function snippet(d, r) {
   if (ex && ex.todo) return "Checklist: " + ex.todo.title;
   const t = r[TEXT] ? r[TEXT].slice(0, 200).replace(/\s+/g, " ").trim() : "";
   if (t) return t;
-  return r[MEDIA] ? mediaLabel(r[MEDIA])[0] : "Message";
+  const info = ex ? (ex.webpage && ex.webpage.title) || mediaInfo(ex) : "";
+  return r[MEDIA] ? join([mediaLabel(r[MEDIA])[0], info], ": ") : "Message";
 }
 
 // --- text with links and search marks
@@ -703,22 +773,69 @@ function isHead(d, i) {
 }
 function link(id) { return single ? `#msg/${id}` : `#topic/${S.k}/msg/${id}`; }
 
-function quote(d, id, cls) {
+function quote(d, id, cls, rp) {
+  rp = rp || {};
+  if (rp.peer) {  // a message in another chat: nothing to jump to
+    const b = h("div", cls || "quote");
+    if (cls) { b.textContent = `message #${id} in ${rp.chat || "another chat"}`; return b; }
+    b.append(h("span", "qn", join([rp.from, rp.chat || "Another chat"])));
+    b.append(h("span", "qt", rp.quote || `Message #${id}`));
+    return b;
+  }
   const b = h("button", cls || "quote");
   b.type = "button";
   b.dataset.to = id;
   const j = d.idx.get(id);
   if (j == null) {
     if (cls) b.textContent = `message #${id}`;
-    else b.append(h("span", "qn", "Reply"), h("span", "qt", `Message #${id} is not in this topic`));
+    else {
+      b.append(h("span", "qn", rp.from || "Reply"), h("span", "qt", rp.quote || `Message #${id} is not in this topic`));
+    }
     return b;
   }
   const t = d.rows[j], s = sender(d, t);
   if (cls) { b.textContent = "“" + snippet(d, t).slice(0, 80) + "”"; return b; }
   b.style.setProperty("--qc", `var(--c${colorOf(s)})`);
-  b.append(h("span", "qn", nameOf(s)), h("span", "qt", snippet(d, t)));
+  b.append(h("span", "qn", nameOf(s)), h("span", "qt", rp.quote || snippet(d, t)));
   return b;
 }
+function webCard(w) {
+  const c = out("div", "wp", safeUrl(w.url));
+  if (w.site) { const e = h("div", "ws"); marked(e, w.site); c.append(e); }
+  if (w.title) { const e = h("div", "wt"); marked(e, w.title); c.append(e); }
+  if (w.description) { const e = h("div", "wd"); marked(e, w.description); c.append(e); }
+  if (!c.firstChild) c.append(h("div", "ws", w.url || "Link preview"));
+  return c;
+}
+function keyboard(rows) {
+  const k = h("div", "kbd");
+  for (const row of rows) {
+    const line = h("div", "kbr");
+    for (const b of row) {
+      const e = out("span", "kb", safeUrl(b.url));
+      marked(e, b.text || "");
+      e.title = b.url || b.copy || b.query || b.text || "";
+      line.append(e);
+    }
+    k.append(line);
+  }
+  return k;
+}
+function note(label, text, links) {
+  const n = h("div", "note");
+  n.append(h("b", null, label), " ");
+  if (links) {
+    links.forEach((x, i) => {
+      if (i) n.append(", ");
+      const a = out("span", null, safeUrl(x.url));
+      marked(a, x.text);
+      a.title = x.url;
+      n.append(a);
+    });
+  } else marked(n, text || "");
+  return n;
+}
+const ACTION_SHOWN = new Set(["names", "title", "users", "icon_color", "icon_emoji_id"]);
 function pollCard(p) {
   const c = h("div", "poll");
   const qq = h("div", "pq");
@@ -768,10 +885,15 @@ function todoCard(t) {
 function service(d, r, i) {
   const w = h("div", "svc"), span = h("span"), s = sender(d, r);
   w.title = fFull.format(r[DATE] * 1000);
+  const a = (r[EXTRA] && r[EXTRA].action) || {};
   span.append(h("b", null, nameOf(s)), " " + actionText(r[ACT]));
   if (r[ACT] === "TopicCreate" && byId.has(r[ID])) span.append(` “${byId.get(r[ID]).title}”`);
-  if (r[REPLY]) span.append(" ", quote(d, r[REPLY], "ql"));
+  else if (a.title) span.append(` “${a.title}”`);
+  if (a.names) span.append(" " + join(a.names, ", "));
+  if (r[REPLY]) span.append(" ", quote(d, r[REPLY], "ql", r[EXTRA] && r[EXTRA].reply));
   if (r[TEXT]) span.append(": " + r[TEXT]);
+  const more = fieldsText(Object.fromEntries(Object.entries(a).filter(([k]) => !ACTION_SHOWN.has(k))));
+  if (more) span.append(h("small", null, more));
   w.append(span);
   return w;
 }
@@ -798,7 +920,7 @@ function renderRow(i) {
   const m = h("div", cls);
   m.style.setProperty("--sc", `var(--c${ci})`);
   const when = fTime.format(r[DATE] * 1000), full = fFull.format(r[DATE] * 1000);
-  const body = h("div", "body");
+  const body = h("div", "body"), ex = r[EXTRA] || {}, media = r[MEDIA];
   if (head) {
     const a = h("div", "ava", initials(nameOf(s)));
     a.style.background = `var(--a${ci})`;
@@ -807,7 +929,9 @@ function renderRow(i) {
     const meta = h("div", "meta"), t = h("a", "time", when);
     t.href = link(r[ID]);
     t.title = full + ` · #${r[ID]}`;
-    meta.append(h("span", "name", nameOf(s)), t);
+    meta.append(h("span", "name", nameOf(s)));
+    for (const x of [ex.author, ex.rank, ex.via_bot && "via " + ex.via_bot]) if (x) meta.append(h("span", "rank", x));
+    meta.append(t);
     if (r[EDIT]) meta.append(h("span", "edited", "edited"));
     body.append(meta);
   } else {
@@ -820,24 +944,34 @@ function renderRow(i) {
     const f = h("div", "fwd"), b = h("b");
     marked(b, r[FWD]);
     f.append(icon("fwd"), "Forwarded from ", b);
+    if (ex.fwd && ex.fwd.author) f.append(` (${ex.fwd.author})`);
     body.append(f);
   }
-  if (r[REPLY]) body.append(quote(d, r[REPLY]));
-  const ex = r[EXTRA], media = r[MEDIA];
+  if (r[REPLY]) body.append(quote(d, r[REPLY], null, ex.reply));
+  else if (ex.reply && ex.reply.story) body.append(h("div", "chip", "Reply to a story"));
   const chip = () => {
-    const [label, ic] = mediaLabel(media), c = h("div", "chip");
+    const [label, ic] = mediaLabel(media), g = ex.geo || ex.venue;
+    const c = out("div", "chip", g ? osm(g) : null), info = mediaInfo(ex);
     c.append(icon(ic), label);
+    if (info) c.append(h("span", "cd", info));
     return c;
   };
-  if (ex && ex.poll) body.append(pollCard(ex.poll));
-  else if (ex && ex.todo) body.append(todoCard(ex.todo));
+  if (ex.poll) body.append(pollCard(ex.poll));
+  else if (ex.todo) body.append(todoCard(ex.todo));
   else if (media && media !== "WebPage") body.append(chip());
   if (r[TEXT]) {
     const t = h("div", "text");
     rich(t, r[TEXT]);
     body.append(t);
   }
-  if (media === "WebPage") body.append(chip());
+  if (media === "WebPage") body.append(ex.webpage ? webCard(ex.webpage) : chip());
+  if (ex.buttons) body.append(keyboard(ex.buttons));
+  if (ex.links) body.append(note("Links:", null, ex.links));
+  if (ex.factcheck) {
+    const fc = ex.factcheck;
+    body.append(note(`Fact check${fc.country ? " · " + fc.country : ""}:`, fc.text));
+  }
+  for (const x of ex.restricted || []) body.append(note(`Restricted on ${x.platform}:`, x.text || x.reason));
   const foot = h("div", "foot");
   if (r[REACT]) {
     for (const [k, v] of Object.entries(r[REACT]).sort((a, b) => b[1] - a[1])) {
@@ -1102,9 +1236,15 @@ function showCount() {
   newerBtn.disabled = !n || S.cur >= n - 1;
 }
 function extraText(ex) {
-  if (ex.poll) return ex.poll.question + "\n" + ex.poll.answers.map((a) => a.text).join("\n");
-  if (ex.todo) return ex.todo.title + "\n" + ex.todo.items.map((a) => a.text).join("\n");
-  return "";
+  const parts = [];
+  if (ex.poll) parts.push(ex.poll.question, ...ex.poll.answers.map((a) => a.text));
+  if (ex.todo) parts.push(ex.todo.title, ...ex.todo.items.map((a) => a.text));
+  if (ex.webpage) parts.push(ex.webpage.site, ex.webpage.title, ex.webpage.description);
+  if (ex.buttons) parts.push(...ex.buttons.flat().map((b) => b.text));
+  if (ex.reply) parts.push(ex.reply.quote);
+  if (ex.factcheck) parts.push(ex.factcheck.text);
+  parts.push(mediaInfo(ex), ex.author, ex.rank);
+  return join(parts, "\n");
 }
 function runSearch() {
   const text = q.value.trim(), job = ++searchJob;

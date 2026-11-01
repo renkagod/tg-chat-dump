@@ -13,15 +13,89 @@ log = logging.getLogger("dump")
 to_json = json.JSONEncoder(ensure_ascii=False).encode  # json.dumps without its setup on every call
 
 
+def size_text(n):
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+
+
+def fields_text(d, skip=("_",)):
+    """A details dict as `key=value` pairs, nested ones flattened; lists of plain values joined by commas."""
+    out = []
+    for k, v in d.items():
+        if k in skip:
+            continue
+        if isinstance(v, dict):
+            v = v.get("_", "") + (f"({fields_text(v)})" if len(v) > ("_" in v) else "")
+        elif isinstance(v, list):
+            v = ", ".join(fields_text(x) if isinstance(x, dict) else str(x) for x in v)
+        out.append(f"{k}={v}")
+    return ", ".join(out)
+
+
+def media_text(extra):
+    """What the media shows, after its type: a file's name and size, a link preview's title, a place..."""
+    if f := extra.get("file"):
+        parts = [f.get("name") or f.get("kind") or f.get("mime")]
+        if f.get("emoji"):
+            parts.append(f["emoji"])
+        if f.get("performer") or f.get("title"):
+            parts.append(" – ".join(x for x in (f.get("performer"), f.get("title")) if x))
+        if f.get("duration"):
+            parts.append(f"{f['duration']:.0f} s")
+        if f.get("size"):
+            parts.append(size_text(f["size"]))
+        return ", ".join(str(p) for p in parts if p)
+    if w := extra.get("webpage"):
+        return " · ".join(w[k] for k in ("site", "title", "description", "url") if w.get(k))
+    if g := extra.get("geo"):
+        return f"{g.get('lat')},{g.get('long')}" + (" (live)" if g.get("live") else "")
+    if v := extra.get("venue"):
+        return " · ".join(str(x) for x in (v.get("title"), v.get("address"), f"{v.get('lat')},{v.get('long')}") if x)
+    if c := extra.get("contact"):
+        name = " ".join(x for x in (c.get("first_name"), c.get("last_name")) if x)
+        return ", ".join(x for x in (name, c.get("phone")) if x)
+    if d := extra.get("dice"):
+        return f"{d['emoticon']} {d['value']}"
+    if g := extra.get("game"):
+        return g.get("title", "")
+    if i := extra.get("invoice"):
+        return f"{i.get('title', '')}, {i.get('amount')} {i.get('currency', '')}".strip(", ")
+    if s := extra.get("story"):
+        return f"story {s.get('id')} of {s.get('peer')}" + (f": {s['caption']}" if s.get("caption") else "")
+    if p := extra.get("paid_media"):
+        return f"{p.get('stars')} stars, {', '.join(p.get('items', []))}"
+    if p := extra.get("photo"):
+        return fields_text(p)
+    if i := extra.get("media_info"):
+        return fields_text(i)
+    return ""
+
+
 def text_line(m):
-    """One line of the human-readable messages.txt."""
-    head = f"[{m['date'][:19].replace('T', ' ')}] #{m['id']} {m['sender'] or m['sender_id'] or '?'}"
-    if m["reply_to"] and m["reply_to"] not in (m["topic_id"], m.get("thread")):
-        head += f" (reply to #{m['reply_to']})"
+    """One entry of the human-readable messages.txt: a line, or several when the text has them."""
+    extra = m.get("extra") or {}
+    who = str(m["sender"] or m["sender_id"] or "?")
+    if extra.get("author"):
+        who += f" (signed {extra['author']})"
+    if extra.get("rank"):
+        who += f" [{extra['rank']}]"
+    if extra.get("via_bot"):
+        who += f" via {extra['via_bot']}"
+    head = f"[{m['date'][:19].replace('T', ' ')}] #{m['id']} {who}"
+    reply = extra.get("reply") or {}
+    if story := reply.get("story"):
+        head += f" (reply to story {story['id']} of {story['peer']})"
+    elif m["reply_to"] and (reply.get("peer") or m["reply_to"] not in (m["topic_id"], m.get("thread"))):
+        where = f" in {reply.get('chat') or reply['peer']}" if reply.get("peer") else ""
+        source = f" from {reply['from']}" if reply.get("from") else ""
+        head += f" (reply to #{m['reply_to']}{where}{source})"
+    if reply.get("quote"):
+        head += f" (quoting «{reply['quote']}»)"
     if m["fwd_from"]:
         head += f" (forwarded from {m['fwd_from']})"
     body = m.get("text_md") or m["text"] or ""
-    extra = m.get("extra") or {}
     if poll := extra.get("poll"):
         answers = " | ".join(f"{a['text']} ({a['voters'] or 0})" for a in poll["answers"])
         body = f"<poll> {poll['question']} | {answers} | {poll['total_voters'] or 0} votes"
@@ -29,9 +103,11 @@ def text_line(m):
         items = " | ".join(("[x] " if i["done"] else "[ ] ") + i["text"] for i in todo["items"])
         body = f"<checklist> {todo['title']} | {items}"
     elif m["media"]:
-        body = f"<{m['media']}> {body}".rstrip()
+        about = media_text(extra)
+        body = f"<{m['media']}{': ' + about if about else ''}> {body}".rstrip()
     if m["action"]:
-        body = f"<{m['action']}> {body}".rstrip()
+        about = fields_text(extra.get("action") or {})
+        body = f"<{m['action']}{': ' + about if about else ''}> {body}".rstrip()
     meta = []
     if m.get("reactions"):
         meta.append(" ".join(f"{k} {v}" for k, v in m["reactions"].items()))
@@ -39,7 +115,20 @@ def text_line(m):
         meta.append(f"{m['views']:,} views")
     if m.get("replies"):
         meta.append(f"{m['replies']} replies")
-    return f"{head}: {body}" + (f"  [{' · '.join(meta)}]" if meta else "") + "\n"
+    if extra.get("paid_stars"):
+        meta.append(f"paid {extra['paid_stars']} stars")
+    under = []  # indented lines under the message
+    if rows := extra.get("buttons"):
+        buttons = (b["text"] + (f" <{b['url']}>" if "url" in b else "") for r in rows for b in r)
+        under.append("buttons: " + " | ".join(buttons))
+    if (links := extra.get("links")) and not m.get("text_md"):
+        under.append("links: " + " | ".join(f"{x['text']} <{x['url']}>" for x in links))
+    if fc := extra.get("factcheck"):
+        under.append(f"fact check{' ' + fc['country'] if fc.get('country') else ''}: {fc.get('text', '')}")
+    for r in extra.get("restricted", []):
+        under.append(f"restricted on {r.get('platform')}: {r.get('text') or r.get('reason')}")
+    line = f"{head}: {body}" + (f"  [{' · '.join(meta)}]" if meta else "")
+    return line + "".join(f"\n  [{u}]" for u in under) + "\n"
 
 
 def message_dict(cols, row):

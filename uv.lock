@@ -172,7 +172,7 @@ wheels = [
 
 [[package]]
 name = "tg-chat-dump"
-version = "1.2.1"
+version = "1.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "prompt-toolkit" },

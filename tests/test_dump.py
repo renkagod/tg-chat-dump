@@ -140,7 +140,7 @@ def test_markdown_option_keeps_formatting_and_hidden_links():
     assert field(row, "text_md") == "**Bold** [link](https://example.com)"
 
 
-def test_polls_option_records_question_answers_and_votes():
+def test_polls_are_recorded_with_question_answers_and_votes():
     poll = Poll(
         id=1,
         question=twe("Best OS?"),
@@ -150,17 +150,17 @@ def test_polls_option_records_question_answers_and_votes():
     results = PollResults(
         results=[PollAnswerVoters(option=b"0", voters=7), PollAnswerVoters(option=b"1", voters=2)], total_voters=9
     )
-    row = to_row(msg(19, media=MessageMediaPoll(poll=poll, results=results)), forum=False, options={"polls"})
+    row = to_row(msg(19, media=MessageMediaPoll(poll=poll, results=results)), forum=False)
     extra = json.loads(field(row, "extra"))["poll"]
     assert extra["question"] == "Best OS?"
     assert extra["answers"] == [{"text": "Linux", "voters": 7}, {"text": "Windows", "voters": 2}]
     assert extra["total_voters"] == 9
 
 
-def test_polls_option_records_checklists():
+def test_checklists_are_recorded():
     todo = TodoList(title=twe("Release"), list=[TodoItem(id=1, title=twe("tests")), TodoItem(id=2, title=twe("tag"))])
     media = MessageMediaToDo(todo=todo, completions=[TodoCompletion(id=1, completed_by=PEER, date=DATE)])
-    extra = json.loads(field(to_row(msg(20, media=media), forum=False, options={"polls"}), "extra"))
+    extra = json.loads(field(to_row(msg(20, media=media), forum=False), "extra"))
     assert extra["todo"] == {
         "title": "Release",
         "items": [{"text": "tests", "done": True}, {"text": "tag", "done": False}],
@@ -176,8 +176,8 @@ def test_open_db_adds_new_columns_to_old_databases(tmp_path):
     assert set(COLUMN_NAMES) <= cols
 
 
-def test_parse_options_rejects_unknown_names():
-    assert config.parse_options("meta, Polls") == {"meta", "polls"}
+def test_parse_options_rejects_unknown_names_and_drops_retired_ones():
+    assert config.parse_options("meta, Polls") == {"meta"}  # polls are always saved now
     with pytest.raises(ValueError, match="unknown option"):
         config.parse_options("meta,videos")
 

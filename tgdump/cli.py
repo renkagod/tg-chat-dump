@@ -64,6 +64,12 @@ def parse_args():
     p.add_argument("--type", dest="kind", choices=KINDS, help="only messages of this type")
     p.add_argument("--out", metavar="DIR", help="output folder; it is saved to .env and used from now on")
     p.add_argument("--export-only", action="store_true", help="rebuild the output folders from the database")
+    p.add_argument(
+        "--refetch",
+        action="store_true",
+        help="download the saved messages again, to fill in what older versions did not keep (rich messages, "
+        "file names, link previews, buttons...); rows are updated in place, nothing saved is dropped",
+    )
     p.add_argument("--login", metavar="NAME", help="log in one more account to data/NAME.session and exit")
     a = p.parse_args()
     a.chat = a.target or a.chat
@@ -77,7 +83,7 @@ def parse_args():
     return a
 
 
-async def update_all(clients, workers, options, takeouts):
+async def update_all(clients, workers, options, takeouts, again=False):
     """Fetch the new messages of every whole-chat dump in data/; a chat that fails does not stop the others."""
     dumps = saved_dumps()
     if not dumps:
@@ -91,7 +97,7 @@ async def update_all(clients, workers, options, takeouts):
         entity = known.get(chat_id)
         target = utils.get_peer(entity) if entity else chat_id
         try:
-            await dump_chat(clients, target, workers=workers, options=options, takeouts=takeouts)
+            await dump_chat(clients, target, workers=workers, options=options, takeouts=takeouts, again=again)
         except (ValueError, errors.RPCError) as e:
             log.warning(f"Cannot update {chat_id}: {e}")
             failed.append(chat_id)
@@ -128,7 +134,7 @@ async def main():
                 raise SystemExit(f"--account: {e}") from None
         if a.update_all:
             async with Takeouts() as takeouts:
-                await update_all(using, a.workers, a.options, takeouts)
+                await update_all(using, a.workers, a.options, takeouts, a.refetch)
             return
         chat = parse_chat(a.chat)
         if a.export_only:
@@ -140,7 +146,14 @@ async def main():
         topics = [int(t) for t in a.topics.split(",")] if a.topics else None
         async with Takeouts() as takeouts:  # also covers a channel's comments, dumped right after it
             await dump_chat(
-                using, chat, topics=topics, workers=a.workers, options=a.options, scope=a.scope, takeouts=takeouts
+                using,
+                chat,
+                topics=topics,
+                workers=a.workers,
+                options=a.options,
+                scope=a.scope,
+                takeouts=takeouts,
+                again=a.refetch,
             )
     finally:
         for c in clients:
