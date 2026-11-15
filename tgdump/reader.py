@@ -20,7 +20,13 @@ _ESCAPES = (("<", "\\u003c"), (">", "\\u003e"), ("&", "\\u0026"), ("\u2028", "\\
 _SELECT = (
     "SELECT id, CAST(strftime('%s', date) AS INTEGER), sender_id, sender, COALESCE(NULLIF(text_md, ''), text),"
     " reply_to, reply_top, topic_id, fwd_from, media, action, grouped_id, edit_date IS NOT NULL,"
-    " reactions, views, replies, extra, NULLIF(text_md, '') IS NOT NULL FROM messages"
+    " reactions, views, replies, extra, NULLIF(text_md, '') IS NOT NULL,"
+    " CAST(strftime('%s', deleted_at) AS INTEGER) FROM messages"
+)
+# earlier texts of edited messages as [unix time of the edit that replaced it, text], the oldest first
+_EDITS = (
+    "SELECT e.id, CAST(strftime('%s', e.replaced) AS INTEGER), COALESCE(NULLIF(e.text_md, ''), e.text)"
+    " FROM edits e JOIN messages m ON m.id = e.id"
 )
 # details the page does not show; "links" is left out too when the Markdown text already has them
 _UNSHOWN = {"channel_post", "rich", "boosts", "effect", "pinned"}
@@ -82,11 +88,15 @@ def _write_list(db, data, key, topic, threads, first=0):
         sql, params = _SELECT + " WHERE topic_id IS ? AND id >= ? ORDER BY id", (topic, start[0])
     else:
         sql, params = _SELECT + " WHERE topic_id IS ? ORDER BY id", (topic,)
+    edits = {}
+    where, args = ("", ()) if threads else (" WHERE m.topic_id IS ?", (topic,))
+    for mid, when, text in db.execute(_EDITS + where + " ORDER BY e.id, e.date", args):
+        edits.setdefault(mid, []).append([when or 0, text or ""])
     part, n, current = None, first, None
     try:
         for r in db.execute(sql, params):
             mid, date, sid, sname, text, reply, top, tid, fwd, media, action, grouped, edited, *meta = r
-            reactions, views, replies, extra, md = meta
+            reactions, views, replies, extra, md, deleted = meta
             if part is None or part.rows == PART_ROWS:
                 if part:
                     part.close()
@@ -103,6 +113,12 @@ def _write_list(db, data, key, topic, threads, first=0):
                     head = [1, post] if post else [0, thread]
             if ex:
                 ex = {k: v for k, v in ex.items() if k not in _UNSHOWN and not (md and k == "links")} or None
+            if deleted or mid in edits:
+                ex = ex or {}
+                if deleted:
+                    ex["deleted"] = deleted
+                if mid in edits:
+                    ex["edits"] = edits[mid]
             row = [
                 mid,
                 date or 0,
@@ -133,12 +149,13 @@ def _write_list(db, data, key, topic, threads, first=0):
             part.f.close()  # an error midway: the .tmp is left behind and removed by the next run
 
 
-def write_reader(db, out, chat_title, titles, topics=None, threads=False, since=None):
+def write_reader(db, out, chat_title, titles, topics=None, threads=False, since=None, changed=None):
     """Write out/index.html and out/.reader/<topic or "all">.<part>.js.
 
     titles: {topic_id: title}; topics: ids of the topics whose messages changed, None rewrites every data file
     (index.html is always rewritten, missing parts are always written). since: the last message id of the
     previous export; with it only the parts of changed topics that hold newer messages are rewritten.
+    changed: {topic_id: its oldest message edited or deleted since then}, rewritten from that message's part on.
     threads=True puts everything into one list ordered by thread, like export() does for a channel's
     discussion group; such a list is always rewritten whole. Returns the path of index.html.
     """
@@ -161,7 +178,8 @@ def write_reader(db, out, chat_title, titles, topics=None, threads=False, since=
         if topics is None or (t in topics if forum else bool(topics)):
             first = 0
             if since is not None and not threads:
-                before = db.execute("SELECT COUNT(*) FROM messages WHERE topic_id IS ? AND id <= ?", (t, since))
+                upto = min(since, changed[t] - 1) if changed and t in changed else since
+                before = db.execute("SELECT COUNT(*) FROM messages WHERE topic_id IS ? AND id <= ?", (t, upto))
                 first = before.fetchone()[0] // PART_ROWS
         first = min([first] + [n for n, p in enumerate(paths) if not p.exists()])
         if threads and first < parts:
@@ -384,6 +402,14 @@ input:focus-visible, #scroller:focus-visible { outline: 0; }
 .msg:hover .gtime, .gtime:focus { opacity: 1; }
 @media (hover: none) { .gtime { opacity: .8; } }
 .edited { font-size: 12px; color: var(--text3); }
+.edited.del { color: var(--c0); }
+.msg.gone .body > :not(.meta):not(.foot):not(.hist), .svc.gone > span { opacity: .55; }
+.hist { max-width: 520px; margin: 3px 0 2px; }
+.hist summary { width: fit-content; cursor: pointer; font-size: 12px; color: var(--text3); }
+.hist summary:hover { color: var(--text2); }
+.was { margin: 4px 0 0; padding: 3px 10px 4px 9px; border-left: 3px solid var(--text3); border-radius: 4px 8px 8px 4px;
+  background: var(--fill2); font-size: 13.5px; color: var(--text2); }
+.wasd { display: block; font-size: 11.5px; color: var(--text3); font-variant-numeric: tabular-nums; }
 .text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .text a, .poll a { color: var(--accent); text-decoration: none; }
 .text a:hover { text-decoration: underline; }
@@ -882,9 +908,31 @@ function todoCard(t) {
   c.append(ul);
   return c;
 }
+function goneTag(when) {
+  const g = h("span", "edited del", "deleted");
+  g.title = `No longer in Telegram, found missing on ${fDayY.format(when * 1000)}`;
+  return g;
+}
+function history(edits) {  // what an edited message said before
+  const d = h("details", "hist");
+  d.append(h("summary", null, edits.length === 1 ? "Earlier text" : `${edits.length} earlier texts`));
+  for (const [when, text] of edits) {
+    const v = h("div", "was"), t = h("div", "text");
+    v.append(h("span", "wasd", when ? `until ${fShortY.format(when * 1000)}, ${fTime.format(when * 1000)}` : ""));
+    rich(t, text);
+    v.append(t);
+    d.append(v);
+  }
+  if (S.re && edits.some((e) => { S.re.lastIndex = 0; return S.re.test(e[1]); })) d.open = true;
+  return d;
+}
 function service(d, r, i) {
   const w = h("div", "svc"), span = h("span"), s = sender(d, r);
   w.title = fFull.format(r[DATE] * 1000);
+  if (r[EXTRA] && r[EXTRA].deleted) {
+    w.classList.add("gone");
+    w.title += ` · deleted, found missing on ${fDayY.format(r[EXTRA].deleted * 1000)}`;
+  }
   const a = (r[EXTRA] && r[EXTRA].action) || {};
   span.append(h("b", null, nameOf(s)), " " + actionText(r[ACT]));
   if (r[ACT] === "TopicCreate" && byId.has(r[ID])) span.append(` “${byId.get(r[ID]).title}”`);
@@ -921,6 +969,7 @@ function renderRow(i) {
   m.style.setProperty("--sc", `var(--c${ci})`);
   const when = fTime.format(r[DATE] * 1000), full = fFull.format(r[DATE] * 1000);
   const body = h("div", "body"), ex = r[EXTRA] || {}, media = r[MEDIA];
+  if (ex.deleted) m.classList.add("gone");
   if (head) {
     const a = h("div", "ava", initials(nameOf(s)));
     a.style.background = `var(--a${ci})`;
@@ -933,6 +982,7 @@ function renderRow(i) {
     for (const x of [ex.author, ex.rank, ex.via_bot && "via " + ex.via_bot]) if (x) meta.append(h("span", "rank", x));
     meta.append(t);
     if (r[EDIT]) meta.append(h("span", "edited", "edited"));
+    if (ex.deleted) meta.append(goneTag(ex.deleted));
     body.append(meta);
   } else {
     const t = h("a", "gtime", when);
@@ -964,6 +1014,7 @@ function renderRow(i) {
     rich(t, r[TEXT]);
     body.append(t);
   }
+  if (ex.edits) body.append(history(ex.edits));
   if (media === "WebPage") body.append(ex.webpage ? webCard(ex.webpage) : chip());
   if (ex.buttons) body.append(keyboard(ex.buttons));
   if (ex.links) body.append(note("Links:", null, ex.links));
@@ -988,6 +1039,7 @@ function renderRow(i) {
     if (r[VIEWS]) st.title = `${num.format(r[VIEWS])} views`;
     foot.append(st);
   }
+  if (ex.deleted && !head) foot.append(goneTag(ex.deleted));
   if (foot.firstChild) body.append(foot);
   m.append(body);
   row.append(m);
@@ -1243,6 +1295,7 @@ function extraText(ex) {
   if (ex.buttons) parts.push(...ex.buttons.flat().map((b) => b.text));
   if (ex.reply) parts.push(ex.reply.quote);
   if (ex.factcheck) parts.push(ex.factcheck.text);
+  if (ex.edits) parts.push(...ex.edits.map((e) => e[1]));
   parts.push(mediaInfo(ex), ex.author, ex.rank);
   return join(parts, "\n");
 }

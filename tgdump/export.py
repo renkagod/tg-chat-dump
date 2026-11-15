@@ -73,6 +73,11 @@ def media_text(extra):
     return ""
 
 
+def stamp(date):
+    """An ISO date as the text files show it."""
+    return date[:19].replace("T", " ")
+
+
 def text_line(m):
     """One entry of the human-readable messages.txt: a line, or several when the text has them."""
     extra = m.get("extra") or {}
@@ -83,7 +88,11 @@ def text_line(m):
         who += f" [{extra['rank']}]"
     if extra.get("via_bot"):
         who += f" via {extra['via_bot']}"
-    head = f"[{m['date'][:19].replace('T', ' ')}] #{m['id']} {who}"
+    head = f"[{stamp(m['date'])}] #{m['id']} {who}"
+    if m.get("deleted_at"):
+        head += " (deleted)"
+    if m["edit_date"]:
+        head += f" (edited {stamp(m['edit_date'])})"
     reply = extra.get("reply") or {}
     if story := reply.get("story"):
         head += f" (reply to story {story['id']} of {story['peer']})"
@@ -127,17 +136,33 @@ def text_line(m):
         under.append(f"fact check{' ' + fc['country'] if fc.get('country') else ''}: {fc.get('text', '')}")
     for r in extra.get("restricted", []):
         under.append(f"restricted on {r.get('platform')}: {r.get('text') or r.get('reason')}")
+    for e in m.get("edits", []):
+        under.append(f"until {stamp(e['replaced'])}: {e['text'] or ''}")
     line = f"{head}: {body}" + (f"  [{' · '.join(meta)}]" if meta else "")
     return line + "".join(f"\n  [{u}]" for u in under) + "\n"
 
 
-def message_dict(cols, row):
-    """A database row as an export record: JSON columns decoded, empty optional fields left out."""
+def message_dict(cols, row, edits=None):
+    """A database row as an export record: JSON columns decoded, empty optional fields left out.
+
+    edits: {message id: its earlier texts}, see earlier_texts.
+    """
     m = dict(zip(cols, row, strict=True))
     for c in JSON_COLUMNS:
         if m.get(c):
             m[c] = json.loads(m[c])
-    return {k: v for k, v in m.items() if v is not None or k in BASE_COLUMNS}
+    m = {k: v for k, v in m.items() if v is not None or k in BASE_COLUMNS}
+    if edits and m["id"] in edits:
+        m["edits"] = edits[m["id"]]
+    return m
+
+
+def earlier_texts(db):
+    """{message id: [{date, text, replaced}]}: what edited messages said before, the oldest text first."""
+    found = {}
+    for mid, date, text, replaced in db.execute("SELECT id, date, text, replaced FROM edits ORDER BY id, date"):
+        found.setdefault(mid, []).append({"date": date, "text": text, "replaced": replaced})
+    return found
 
 
 def chat_folder(chat_id, chat_title, scope=NO_SCOPE, out_root=None):
@@ -192,7 +217,8 @@ def export(
 ):
     """Write <out>/<chat>/<topic id>_<title>/messages.jsonl and messages.txt.
 
-    Later runs append only the new messages, unless older ones changed; full=True rewrites everything.
+    Later runs append only the new messages and rewrite the topics where saved ones were edited or deleted;
+    full=True rewrites everything.
     reader=True also writes index.html, the offline reader.
     With threads=True (a channel's discussion group) everything goes to one folder,
     ordered by thread, and each thread is headed by the channel post it belongs to.
@@ -202,13 +228,27 @@ def export(
     fingerprint = json.dumps(sorted(titles.items()), ensure_ascii=False)
     cols = [c[1] for c in db.execute("PRAGMA table_info(messages)")]
     since = None if full or threads else appendable_since(db, out, titles)
+    edits = earlier_texts(db)
+    # topic -> its oldest message that changed in place since the last export
+    changed = dict(
+        db.execute(
+            "SELECT m.topic_id, MIN(m.id) FROM changed c JOIN messages m ON m.id = c.id WHERE m.id <= ? "
+            "GROUP BY m.topic_id",
+            (since or 0,),
+        )
+    )
     if threads:
-        groups = [(None, "", (), "COALESCE(reply_top, reply_to, id), id")]
+        groups = [(None, "", (), "COALESCE(reply_top, reply_to, id), id", "w")]
     else:
         topic_ids = [t for (t,) in db.execute("SELECT DISTINCT topic_id FROM messages WHERE id > ?", (since or 0,))]
-        groups = [(t, "WHERE topic_id IS ? AND id > ?", (t, since or 0), "id") for t in topic_ids]
-    mode = "w" if since is None else "a"
-    for t, where, params, order in groups:
+        topic_ids += [t for t in changed if t not in topic_ids]
+        groups = [
+            (t, "WHERE topic_id IS ?", (t,), "id", "w")
+            if since is None or t in changed
+            else (t, "WHERE topic_id IS ? AND id > ?", (t, since), "id", "a")
+            for t in topic_ids
+        ]
+    for t, where, params, order, mode in groups:
         target = out if t is None else topic_folder(out, t, titles)
         target.mkdir(parents=True, exist_ok=True)
         with (
@@ -217,7 +257,7 @@ def export(
         ):
             current = None
             for r in db.execute(f"SELECT * FROM messages {where} ORDER BY {order}", params):
-                m = message_dict(cols, r)
+                m = message_dict(cols, r, edits)
                 if threads:
                     m["thread"] = m["reply_top"] or m["reply_to"] or m["id"]
                     if m["thread"] != current:
@@ -228,11 +268,15 @@ def export(
                 ft.write(text_line(m))
     max_id, rows = db.execute("SELECT MAX(id), COUNT(*) FROM messages").fetchone()
     db.execute("INSERT OR REPLACE INTO exports VALUES(?, ?, ?, ?)", (str(out), max_id or 0, rows, fingerprint))
+    if db.execute("SELECT 1 FROM changed LIMIT 1").fetchone():
+        # this folder is up to date now; any other export of the same database is written whole next time
+        db.execute("UPDATE exports SET max_id=-1 WHERE folder != ?", (str(out),))
+        db.execute("DELETE FROM changed")
     db.commit()
     log.info(f"{'Exported' if since is None else 'Appended the new messages'} to {out}")
     if reader:
-        changed = None if since is None or threads else set(topic_ids)
-        write_reader(db, out, chat_title, titles, topics=changed, threads=threads, since=since)
+        touched = None if since is None or threads else set(topic_ids)
+        write_reader(db, out, chat_title, titles, topics=touched, threads=threads, since=since, changed=changed)
     return out
 
 

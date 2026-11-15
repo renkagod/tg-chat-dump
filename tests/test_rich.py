@@ -345,11 +345,14 @@ def test_refetch_resets_the_ranges_and_the_export(tmp_path):
     db.execute("UPDATE tasks SET done=1, cursor=lo")
     save(db, "range:0", [to_row(msg(1, "x"), False)])
     db.execute("INSERT INTO exports VALUES('out', 1, 1, '[]')")
-    db.execute("PRAGMA user_version=1")  # written by an older version
+    db.execute("PRAGMA user_version=1")  # written by a version before 1.3.0
+    db.commit()
+    db.close()
+    db = open_db(tmp_path / "old.sqlite")
     assert outdated(db)
     refetch(db)
     assert db.execute("SELECT COUNT(*) FROM tasks WHERE done=0 AND cursor=hi + 1").fetchone()[0] == 3
-    assert db.execute("SELECT COUNT(*) FROM exports").fetchone()[0] == 0
+    assert db.execute("SELECT max_id, rows FROM exports").fetchall() == [(-1, 1)]  # written again, still listed
     assert db.execute("PRAGMA user_version").fetchone()[0] == FORMAT and not outdated(db)
     assert db.execute("SELECT text FROM messages").fetchone() == ("x",)  # nothing saved is dropped
 

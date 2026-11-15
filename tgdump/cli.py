@@ -12,7 +12,7 @@ from . import interactive
 from .accounts import find_account, login, make_client, open_accounts, resolve
 from .config import DATA, OPTIONS, ensure_api_keys, load_settings, parse_options, save_settings
 from .export import export_db
-from .fetch import Takeouts, dump_chat, saved_dumps
+from .fetch import RECHECK_DAYS, Takeouts, dump_chat, saved_dumps
 from .scope import KINDS, Scope, parse_date
 from .util import parse_chat
 
@@ -70,6 +70,14 @@ def parse_args():
         help="download the saved messages again, to fill in what older versions did not keep (rich messages, "
         "file names, link previews, buttons...); rows are updated in place, nothing saved is dropped",
     )
+    p.add_argument(
+        "--recheck",
+        type=int,
+        default=RECHECK_DAYS,
+        metavar="DAYS",
+        help="when Telegram cannot list the edits and deletions since the last run, download again what was "
+        f"written from this many days before it (default {RECHECK_DAYS}); 0 does not look for them at all",
+    )
     p.add_argument("--login", metavar="NAME", help="log in one more account to data/NAME.session and exit")
     a = p.parse_args()
     a.chat = a.target or a.chat
@@ -83,7 +91,7 @@ def parse_args():
     return a
 
 
-async def update_all(clients, workers, options, takeouts, again=False):
+async def update_all(clients, workers, options, takeouts, again=False, recheck=RECHECK_DAYS):
     """Fetch the new messages of every whole-chat dump in data/; a chat that fails does not stop the others."""
     dumps = saved_dumps()
     if not dumps:
@@ -97,7 +105,9 @@ async def update_all(clients, workers, options, takeouts, again=False):
         entity = known.get(chat_id)
         target = utils.get_peer(entity) if entity else chat_id
         try:
-            await dump_chat(clients, target, workers=workers, options=options, takeouts=takeouts, again=again)
+            await dump_chat(
+                clients, target, workers=workers, options=options, takeouts=takeouts, again=again, recheck=recheck
+            )
         except (ValueError, errors.RPCError) as e:
             log.warning(f"Cannot update {chat_id}: {e}")
             failed.append(chat_id)
@@ -134,7 +144,7 @@ async def main():
                 raise SystemExit(f"--account: {e}") from None
         if a.update_all:
             async with Takeouts() as takeouts:
-                await update_all(using, a.workers, a.options, takeouts, a.refetch)
+                await update_all(using, a.workers, a.options, takeouts, a.refetch, a.recheck)
             return
         chat = parse_chat(a.chat)
         if a.export_only:
@@ -154,6 +164,7 @@ async def main():
                 scope=a.scope,
                 takeouts=takeouts,
                 again=a.refetch,
+                recheck=a.recheck,
             )
     finally:
         for c in clients:

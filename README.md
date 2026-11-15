@@ -33,6 +33,7 @@ out/1234567890_My_Chat/
 - A whole forum in one pass. Messages are sorted into topics as they arrive.
 - The chat is split into message-id ranges that several workers download at once. Telegram limits each account separately, so every extra account adds about as much speed as the first.
 - Progress is committed to SQLite every 100 messages. An interrupted run resumes where it stopped, and later runs fetch only new messages and append them to the files, so a repeat run of a large chat takes seconds. When a forum topic is renamed, its folder is renamed too.
+- A repeat run also finds the messages edited or deleted since the last one. An edited message keeps its earlier text next to the new one, a deleted message stays in the dump and is marked as deleted (see [Edits and deletions](#edits-and-deletions)).
 - Everything the Telegram app shows with a message, not only its text: rich messages laid out in blocks, file names and sizes, link previews, polls and checklists, places and contacts, buttons with their links, quotes in replies, replies to other chats, forward sources, author signatures and admin titles, fact checks, service actions with their details.
 - Optional extras, each a toggle: reactions and views, formatting with hidden links, comments under channel posts, and Telegram's export mode (see [Extras](#extras)).
 - Filters by date range, author or message type, such as links or documents.
@@ -117,6 +118,16 @@ A filtered dump gets its own database and folder, for example `out/1234567890_My
 
 When the whole chat is already dumped, date and author filters are applied to the saved copy: the whole chat is brought up to date first, then the filtered folder is written from it without downloading the messages again. `--type` always asks Telegram, since the saved copy does not know which messages hold links.
 
+## Edits and deletions
+
+A repeat run does more than fetch the new messages: it brings the saved ones in line with Telegram. An edited message gets its new text and the earlier one is kept. A deleted message is not dropped from the dump, it is marked as deleted.
+
+- A channel or supergroup has a log of changes on Telegram's side, and the run reads it from where the last run stopped. The log lists every edit and deletion in the chat, however old the message, and reading it takes a few requests: a day of a busy group, with thousands of new messages, is read in about ten seconds. It works for a public channel you have not joined too.
+- The log is not endless: it holds about the last 100,000 changes, new messages included. That is years of a quiet channel and several days of a group with thousands of messages a day. A private chat or a small group has none. In these cases the messages written from two days before the last run on are downloaded again and compared with the saved ones; two days is how long Telegram lets a member edit a message. `--recheck 7` goes a week back instead, `--recheck 0` turns the whole check off.
+- `--refetch` compares the whole chat.
+
+Only what a run saw can be kept: a text replaced before the first dump, or written and replaced between two runs, is not known. The date of a deletion is the day the run found the message missing. A filtered dump is not checked on its own; one made from the saved whole chat gets the edits and deletions with it.
+
 ## Command line
 
 With arguments it runs without questions, for scripts and cron. Settings come from `.env` (see `.env.example`). The examples use the source checkout; with the installed package, replace `uv run dump.py` with `tg-chat-dump`:
@@ -129,6 +140,7 @@ uv run dump.py --chat @somegroup --topics 12,37      # only these forum topics
 uv run dump.py --chat @somegroup --with meta,markdown   # with extras
 uv run dump.py --chat @somegroup --export-only       # rebuild the folders from the database, no network
 uv run dump.py --chat @somegroup --refetch           # download the saved messages again, see below
+uv run dump.py --chat @somegroup --recheck 7         # look for edits and deletions a week back, see above
 uv run dump.py --login acc2                          # add another account (see below)
 uv run dump.py --chat @somegroup --workers 2         # workers per account, default 3
 uv run dump.py --chat @friend --account acc2         # only this account: session name, @username or id
@@ -164,7 +176,7 @@ Telegram's per-account rate limit sets the ceiling: about 6,000 messages/min wit
 
 ## Output
 
-With the `html` extra the chat folder gets **`index.html`**: double-click it to read the dump in a browser, with no network and no server. Topics are in a sidebar; the chat opens at the newest messages, replies jump to the quoted message, and there is search (`/`, Enter for the next match), a jump to a date or a message id, and links like `index.html#topic/12/msg/1042`. Its data lies in the hidden `.reader/` folder next to it, in parts of 10,000 messages; a repeat run rewrites only the newest part of each topic that got new messages, so it takes a fraction of a second. Times are shown in your local timezone, while the text files keep UTC.
+With the `html` extra the chat folder gets **`index.html`**: double-click it to read the dump in a browser, with no network and no server. Topics are in a sidebar; the chat opens at the newest messages, replies jump to the quoted message, and there is search (`/`, Enter for the next match), a jump to a date or a message id, and links like `index.html#topic/12/msg/1042`. Its data lies in the hidden `.reader/` folder next to it, in parts of 10,000 messages; a repeat run rewrites only the newest part of each topic that got new messages, and the parts with edited or deleted ones, so it takes a fraction of a second. An edited message has its earlier texts under it, folded; a deleted one is dimmed and labelled. Times are shown in your local timezone, while the text files keep UTC.
 
 Each topic folder contains:
 
@@ -176,6 +188,9 @@ Each topic folder contains:
 [2026-03-14 09:05:00] #1044 Carol: <poll> Lunch? | Pizza (4) | Sushi (2) | 6 votes
 [2026-03-14 09:06:10] #1045 Dave [admin] (reply to #1042) (quoting «hi»): <MessageMediaDocument: notes.pdf, 1.2 MB> the notes
   [buttons: Open <https://example.com/notes>]
+[2026-03-14 09:08:30] #1046 Eve (edited 2026-03-14 09:12:05): see you at seven
+  [until 2026-03-14 09:12:05: see you at six]
+[2026-03-14 09:09:44] #1047 Frank (deleted): never mind
 ```
 
 **`messages.jsonl`**: one JSON object per message:
@@ -194,12 +209,14 @@ Each topic folder contains:
 | `grouped_id` | album id |
 | `extra` | everything else the app shows, see below |
 | `text_md`, `views`, `forwards`, `replies`, `reactions` | only with the matching [extras](#extras) |
+| `deleted_at` | when a run found the message gone from Telegram; absent while it is there |
+| `edits` | earlier texts of an edited message, oldest first: `date` (when it was written), `text`, `replaced` (the edit that replaced it) |
 
 `extra` holds only what a message has: `file` (name, size, type, duration, performer and title, sticker emoji), `webpage` (link preview: site, title, description), `poll`, `todo`, `geo`, `venue`, `contact`, `dice`, `game`, `invoice`, `story`, `paid_media`, `media_info` (the fields of any other media), `buttons` (rows of `{text, url}`), `links` (addresses hidden behind words), `reply` (`quote`, and `peer`/`chat`/`from` for a reply to another chat), `fwd` (source id, date, signature), `author` (signature of a channel post), `rank` (admin title), `via_bot`, `action` (fields of a service message), `factcheck`, `restricted`, `effect`, `paid_stars`, `pinned`, `channel_post`. `rich: true` marks a rich message: Telegram's block layout of paragraphs, quotes, lists and tables, saved in `text` as plain text (and as Markdown in `text_md` with the `markdown` extra).
 
-Dumps made by versions before 1.3.0 lack some of this: rich messages there have an empty text, and media, buttons and replies have no details. `--refetch` downloads the saved messages again and fills that in; it takes about as long as the first dump, updates rows in place (messages deleted from Telegram since stay), and rewrites the folders. Ctrl+C stops it, and the next run goes on with it.
+Dumps made by versions before 1.3.0 lack some of this: rich messages there have an empty text, and media, buttons and replies have no details. `--refetch` downloads the saved messages again and fills that in; it takes about as long as the first dump, updates rows in place (messages deleted from Telegram since stay, marked as deleted), and rewrites the folders. Ctrl+C stops it, and the next run goes on with it.
 
-The raw data is in `data/<chat id>.sqlite`, with tables `messages`, `topics`, `tasks` (download progress) and `exports` (what was last written to each folder, so a repeat run only appends). While a dump runs, `.sqlite-wal` and `.sqlite-shm` files sit next to the database; they are part of it and disappear when the run ends, so copy the database only after that.
+The raw data is in `data/<chat id>.sqlite`, with tables `messages`, `topics`, `edits` (earlier texts of edited messages), `tasks` (download progress), `exports` (what was last written to each folder, so a repeat run only appends), `changed` (messages edited or deleted since the last export) and `state` (where Telegram's change log stood at the last run). A database from an older version is brought up to date when it is opened; the first run after that writes the text files again once, since they now show edits and deletions. While a dump runs, `.sqlite-wal` and `.sqlite-shm` files sit next to the database; they are part of it and disappear when the run ends, so copy the database only after that.
 
 ## Limitations
 

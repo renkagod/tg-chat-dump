@@ -590,6 +590,7 @@ class ProgressLine:
             text = {
                 "connecting": "connecting accounts…",
                 "planning": "reading chat info…",
+                "checking": "looking for edits and deletions…",
                 "exporting": "writing topic folders…",
                 "done": "done",
             }.get(phase, phase)
@@ -656,7 +657,10 @@ async def run_dump(item, clients, workers, options, scope, takeouts):
         if stats.get("local"):
             what = f"{stats.get('stored', 0):,} messages, filtered from the saved dump"
         else:
-            what = f"+{stats.get('fetched', 0):,} new, {stats.get('stored', 0):,} saved in total"
+            what = f"+{stats.get('new', 0):,} new, {stats.get('stored', 0):,} saved in total"
+            for key in ("edited", "deleted"):
+                if stats.get(key):
+                    what += f", {stats[key]:,} {key}"
         print(f"{paint('✓ Done in', 'green')} {paint(took, 'green', 'bold')}{paint(':', 'green')} {what}")
         reader = out / "index.html"
         print(f"{link(reader) if reader.exists() else link(out)}")

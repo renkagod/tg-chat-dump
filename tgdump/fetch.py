@@ -6,7 +6,7 @@ import datetime
 import logging
 import sqlite3
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from telethon import errors, functions, utils
@@ -15,6 +15,7 @@ from telethon.tl.functions.users import GetUsersRequest
 from telethon.tl.types import Channel, InputUserSelf, PeerChannel
 
 from .accounts import resolve
+from .changes import Changes, apply_changes, channel_changes, channel_pts
 from .config import DATA
 from .export import export_db
 from .scope import NO_SCOPE, Scope
@@ -22,18 +23,23 @@ from .store import (
     BATCH_SIZE,
     COLUMN_NAMES,
     clear,
+    get_state,
     open_db,
     outdated,
     plan_full,
     plan_topics,
     range_work_left,
+    recheck_from,
+    recheck_topics,
     refetch,
     save,
+    set_state,
     to_row,
 )
 from .util import fmt_duration, iso, parse_chat
 
 log = logging.getLogger("dump")
+RECHECK_DAYS = 2  # how far before the last run messages are downloaded again when Telegram's change log is no help
 
 
 @dataclass
@@ -44,6 +50,9 @@ class Job:
     forum: bool
     options: frozenset
     iter_kwargs: dict
+    gone_at: str | None = None  # the time to mark saved messages with when Telegram no longer lists them
+    firsts: dict = field(default_factory=dict)  # id(client) -> the oldest message id its account sees
+    marked: int = 0  # messages marked as deleted so far
 
 
 async def run_task(client, entity, job, progress, key):
@@ -51,14 +60,15 @@ async def run_task(client, entity, job, progress, key):
     kw = dict(job.iter_kwargs)
     if topic is not None:
         kw["reply_to"] = topic
+    gone = (job.firsts.get(id(client), 0), job.gone_at) if job.gone_at else None
     rows = []
     async for m in client.iter_messages(entity, offset_id=cursor, min_id=lo, wait_time=0, **kw):
         rows.append(to_row(m, job.forum, job.options))
         if len(rows) >= BATCH_SIZE:
-            save(job.db, key, rows)
+            job.marked += save(job.db, key, rows, gone=gone)
             progress["n"] += len(rows)
             rows = []
-    save(job.db, key, rows, done=True)
+    job.marked += save(job.db, key, rows, done=True, gone=gone)
     progress["n"] += len(rows)
     progress["left"] -= 1
 
@@ -206,6 +216,9 @@ def copy_scope(whole_path, db_path, scope, sender_id=None):
         db.execute(f"INSERT INTO messages({cols}) SELECT {cols} FROM whole.messages WHERE {where}", params)
         db.execute("DELETE FROM topics")
         db.execute("INSERT INTO topics SELECT id, title FROM whole.topics")
+        db.execute("DELETE FROM edits")
+        db.execute("INSERT INTO edits SELECT * FROM whole.edits WHERE id IN (SELECT id FROM messages)")
+        db.execute("DELETE FROM changed")  # the export that follows is written whole
         db.commit()
         db.execute("DETACH DATABASE whole")
         return db.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
@@ -238,6 +251,12 @@ async def saved_by(client, entity, db):
         return True
     found = await client.get_messages(entity, ids=[i for i, _ in stored])
     return any(m is not None and iso(m.date) == date for m, (_, date) in zip(found, stored, strict=True))
+
+
+async def oldest_id(client, entity):
+    """The id of the oldest message this account sees in the chat, 0 when it sees none."""
+    oldest = await client.get_messages(entity, limit=1, reverse=True)
+    return oldest[0].id if oldest else 0
 
 
 async def id_bounds(client, entity, scope):
@@ -276,10 +295,14 @@ async def dump_chat(
     threads=False,
     takeouts=None,
     again=False,
+    recheck=RECHECK_DAYS,
 ):
     """Download a chat with every client that can see it, then export it.
 
     again=True downloads the saved messages again too (--refetch), to fill in what older versions did not keep.
+    A repeat run also looks for messages edited or deleted since the last one: in Telegram's change log where
+    the chat has one that reaches back far enough, otherwise by downloading again what was written from
+    `recheck` days before the last run on. recheck=0 leaves the saved messages alone.
 
     `takeouts` (a Takeouts) keeps export mode open for later dumps; without it, it is closed when this one ends.
     `stats` (a dict) is updated in place for progress display: phase, label, total
@@ -328,6 +351,7 @@ async def dump_chat(
                 options=options - {"comments"},
                 takeouts=takeouts,
                 again=again,
+                recheck=recheck,
             )
             stats.update(phase="exporting", label="")
             found = await asyncio.to_thread(copy_scope, whole, db_path, scope, sender)
@@ -361,24 +385,65 @@ async def dump_chat(
             log.info("Messages saved by an older version lack details it did not keep; --refetch fills them in")
         if forum:
             await fetch_topics(client, entity, db)
+
+        # edits and deletions since the last run; a filtered dump has its own database and is left as it is
+        now = iso(datetime.datetime.now(datetime.UTC).replace(microsecond=0))
+        check = recheck > 0 and not scope
+        newest = db.execute("SELECT date, id FROM messages ORDER BY id DESC LIMIT 1").fetchone()
+        last = get_state(db, "checked") or (newest and newest[0])
+        had, had_edits = db.execute("SELECT (SELECT COUNT(*) FROM messages), (SELECT COUNT(*) FROM edits)").fetchone()
+        seen, pts_now, window = Changes(), None, None
+        if check and isinstance(entity, Channel):
+            pts_now = await channel_pts(client, entity)
+            pts = get_state(db, "pts")
+            if pts and not again:
+                stats["phase"] = "checking"
+                seen = await channel_changes(client, entity, int(pts))
+                if seen.complete:
+                    log.info(f"Telegram's change log: {len(seen.edited)} edited, {len(seen.deleted)} deleted")
+                else:
+                    log.info("Telegram's change log does not reach back to the last run")
+                stats["phase"] = "planning"
+        if check and last and not again and not seen.complete:
+            # no log to go by: what was written shortly before the last run is downloaded again
+            start = datetime.datetime.fromisoformat(last) - datetime.timedelta(days=recheck)
+            window = db.execute(
+                "SELECT MIN(id) FROM messages WHERE id > COALESCE("
+                "(SELECT id FROM messages WHERE date < ? ORDER BY id DESC LIMIT 1), 0)",
+                (iso(start),),
+            ).fetchone()[0]  # the first saved message of those days; both lookups walk the ids from the newest
+            if window:
+                log.info(f"Checking the messages from {start:%Y-%m-%d %H:%M} on for edits and deletions")
+
         if topics:
             topics = [t for t in topics if t != 1]
             if not topics:
                 raise ValueError("General (id 1) cannot be dumped on its own; dump the whole chat instead")
             plan_topics(db, topics)
+            if window:
+                recheck_topics(db, topics, window)
             keys = [f"topic:{t}" for t in topics]
             total = 0
             for t in topics:
                 total += (await client.get_messages(entity, limit=0, reply_to=t)).total
             marks = ",".join("?" * len(topics))
             stored = db.execute(f"SELECT COUNT(*) FROM messages WHERE topic_id IN ({marks})", topics).fetchone()[0]
+            if window:  # the messages fetched again are counted as they come back
+                again_sql = f"SELECT COUNT(*) FROM messages WHERE topic_id IN ({marks}) AND id >= ?"
+                stored -= db.execute(again_sql, [*topics, window]).fetchone()[0]
+            firsts = {}
         else:
-            first, top, total = await id_bounds(client, entity, scope)
+            (first, top, total), *others = await asyncio.gather(
+                id_bounds(client, entity, scope), *(oldest_id(c, e) for c, e in pairs[1:])
+            )
+            firsts = {id(c): f for (c, _), f in zip(pairs, [first, *others], strict=True)}
             log.info(f"Messages: ~{total}, ids {first}..{top}")
             if top >= first:
                 plan_full(db, first, top, parts=workers * len(pairs))
             keys = [k for (k,) in db.execute("SELECT key FROM tasks WHERE topic IS NULL")]
-            stored = db.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+            stored = had
+            if window and (redo := recheck_from(db, window)) is not None:
+                stored -= db.execute("SELECT COUNT(*) FROM messages WHERE id > ?", (redo,)).fetchone()[0]
 
         if again:
             stored = 0  # every saved message is fetched again, so none of them counts as already there
@@ -403,7 +468,9 @@ async def dump_chat(
                 sync()
                 await asyncio.sleep(0.5)
 
-        job = Job(db, forum, options, scope.iter_kwargs())
+        # a search by author or type lists only some of the messages, so it cannot tell which ones are gone
+        gone_at = now if (check or again) and not scope.iter_kwargs() else None
+        job = Job(db, forum, options, scope.iter_kwargs(), gone_at, firsts)
         helpers = [asyncio.create_task(report(progress, time.monotonic())), asyncio.create_task(mirror())]
         try:
             await asyncio.gather(*(worker(queue, c, e, job, progress) for _ in range(workers) for c, e in pairs))
@@ -411,8 +478,20 @@ async def dump_chat(
             for h in helpers:
                 h.cancel()
             sync()
-        saved = db.execute("SELECT COUNT(*) FROM messages").fetchone()[0] if again else stored + progress["n"]
-        log.info(f"Fetched this run: {progress['n']}, total in database: {saved}")
+        if check:
+            stats["phase"] = "checking"
+            # with the export-mode client where there is one: the plain one is rate limited after a few requests
+            job.marked += await apply_changes(*pairs[0], db, seen, forum, options, now, newest[1] if newest else 0)
+            if not again or not topics:  # --refetch of some topics says nothing about the rest of the chat
+                if seen.pts or pts_now:
+                    set_state(db, "pts", seen.pts or pts_now)
+                set_state(db, "checked", now)
+            db.commit()
+        saved, edits = db.execute("SELECT (SELECT COUNT(*) FROM messages), (SELECT COUNT(*) FROM edits)").fetchone()
+        stats.update(stored=saved, new=saved - had, edited=edits - had_edits, deleted=job.marked)
+        log.info(f"Fetched this run: {progress['n']}, new: {saved - had}, total in database: {saved}")
+        if edits - had_edits or job.marked:
+            log.info(f"Edited since the last run: {edits - had_edits}, gone from Telegram: {job.marked}")
 
     stats["phase"] = "exporting"
     out = await asyncio.to_thread(
@@ -420,12 +499,14 @@ async def dump_chat(
     )
 
     if "comments" in options and isinstance(entity, Channel) and entity.broadcast:
-        await dump_comments(clients, client, entity, out, workers, stats, options, scope, takeouts, again)
+        await dump_comments(clients, client, entity, out, workers, stats, options, scope, takeouts, again, recheck)
     stats["phase"] = "done"
     return out
 
 
-async def dump_comments(clients, client, channel, out, workers, stats, options, scope, takeouts, again=False):
+async def dump_comments(
+    clients, client, channel, out, workers, stats, options, scope, takeouts, again=False, recheck=RECHECK_DAYS
+):
     """Comments under channel posts live in the linked discussion group; dump it into <channel>/comments."""
     full = await client(functions.channels.GetFullChannelRequest(channel))
     linked = full.full_chat.linked_chat_id
@@ -445,6 +526,7 @@ async def dump_comments(clients, client, channel, out, workers, stats, options, 
             threads=True,
             takeouts=takeouts,
             again=again,
+            recheck=recheck,
         )
     except (ValueError, errors.RPCError) as e:
         log.warning(f"Cannot dump the comments: {e}")
