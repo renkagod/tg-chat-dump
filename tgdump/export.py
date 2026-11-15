@@ -6,7 +6,7 @@ import logging
 from .config import out_dir
 from .reader import write_reader
 from .scope import NO_SCOPE
-from .store import BASE_COLUMNS, JSON_COLUMNS, open_db
+from .store import BASE_COLUMNS, JSON_COLUMNS, TOPIC_NAMES, get_chat, open_db
 from .util import slug
 
 log = logging.getLogger("dump")
@@ -165,6 +165,25 @@ def earlier_texts(db):
     return found
 
 
+def write_about(db, out):
+    """chat.json (the chat itself and its forum topics) and users.jsonl (everyone who wrote), written whole."""
+    info = get_chat(db)
+    info.pop("photo", None)  # the picture stays in the database and in the reader
+    topics = [dict(zip(TOPIC_NAMES, r, strict=True)) for r in db.execute("SELECT * FROM topics ORDER BY id")]
+    if topics:
+        info["topics"] = [{k: v for k, v in t.items() if v is not None} for t in topics]
+    if info:
+        with open(out / "chat.json", "w", encoding="utf-8") as f:
+            json.dump(info, f, ensure_ascii=False, indent=1)
+            f.write("\n")
+    cols = ("id", "name", "username", "bot", "deleted", "bio", "updated")
+    people = db.execute(f"SELECT {', '.join(cols)} FROM users ORDER BY id").fetchall()
+    if people:
+        with open(out / "users.jsonl", "w", encoding="utf-8") as f:
+            for row in people:
+                f.write(to_json({k: v for k, v in zip(cols, row, strict=True) if v is not None}) + "\n")
+
+
 def chat_folder(chat_id, chat_title, scope=NO_SCOPE, out_root=None):
     name = f"{chat_id}_{slug(chat_title)}".rstrip("_")
     if scope:
@@ -273,6 +292,8 @@ def export(
         db.execute("UPDATE exports SET max_id=-1 WHERE folder != ?", (str(out),))
         db.execute("DELETE FROM changed")
     db.commit()
+    out.mkdir(parents=True, exist_ok=True)
+    write_about(db, out)
     log.info(f"{'Exported' if since is None else 'Appended the new messages'} to {out}")
     if reader:
         touched = None if since is None or threads else set(topic_ids)

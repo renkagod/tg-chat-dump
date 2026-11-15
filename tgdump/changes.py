@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 
 from telethon import errors, functions, types
 
-from .store import UPSERT, mark_deleted, set_pinned, stored_ids, to_row
+from .store import UPSERT, mark_deleted, person, save_users, set_pinned, stored_ids, to_row
 
 log = logging.getLogger("dump")
 
@@ -24,16 +24,6 @@ class Changes:
     pinned: dict = field(default_factory=dict)  # message id -> pinned or not
     pts: int | None = None  # where the log stands now, to start from next time
     complete: bool = False  # False: the log does not reach back to the saved pts, or was not read at all
-
-
-async def channel_pts(client, channel):
-    """Where the channel's change log stands now, or None when Telegram does not say."""
-    try:
-        full = await client(functions.channels.GetFullChannelRequest(channel))
-    except errors.RPCError as e:
-        log.warning(f"Cannot read the chat's state: {e}")
-        return None
-    return full.full_chat.pts
 
 
 async def channel_changes(client, channel, pts):
@@ -83,6 +73,7 @@ async def apply_changes(client, entity, db, found, forum, options, when, upto):
         part = ids[i : i + IDS_PER_REQUEST]
         got = await client.get_messages(entity, ids=part)
         db.executemany(UPSERT, [to_row(m, forum, options) for m in got if m is not None])
+        save_users(db, [person(m.sender, m.sender_id) for m in got if m is not None and m.sender is not None], when)
         marked += mark_deleted(db, [i for i, m in zip(part, got, strict=True) if m is None], when)
     set_pinned(db, found.pinned)
     return marked

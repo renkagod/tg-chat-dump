@@ -18,7 +18,8 @@ BATCH_SIZE = 100  # how often progress is committed
 # 2: rich messages, media details, buttons, reply quotes, forward sources and action fields in the rows
 #    (rows saved before that lack them until --refetch).
 # 3: deleted_at, the edits, changed and state tables, edits and deletions in the exported text.
-FORMAT = 3
+# 4: the users and chat tables, and what a forum topic looks like (icon, colour, closed, pinned).
+FORMAT = 4
 
 COLUMNS = [
     ("id", "INTEGER PRIMARY KEY"),
@@ -44,12 +45,26 @@ COLUMNS = [
     ("deleted_at", "TEXT"),  # when a later run found the message gone from Telegram
 ]
 COLUMN_NAMES = [name for name, _ in COLUMNS]
+TOPIC_COLUMNS = [
+    ("id", "INTEGER PRIMARY KEY"),
+    ("title", "TEXT"),
+    ("date", "TEXT"),  # when the topic was created
+    ("creator_id", "INTEGER"),
+    ("icon", "TEXT"),  # the emoji on its icon
+    ("icon_emoji_id", "INTEGER"),  # the custom emoji that icon is
+    ("color", "INTEGER"),  # 0xRRGGBB of an icon without an emoji
+    ("closed", "INTEGER"),
+    ("pinned", "INTEGER"),  # its place among the pinned topics, from 1
+    ("hidden", "INTEGER"),  # General taken off the list by the admins
+]
+TOPIC_NAMES = [name for name, _ in TOPIC_COLUMNS]
+CHAT_LISTS = {"usernames", "members_cannot"}  # facts about the chat that are lists, kept as JSON
 BASE_COLUMNS = set(COLUMN_NAMES[:13])  # always present in exports, even when empty
 JSON_COLUMNS = {"reactions", "extra"}
 
 SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS messages({", ".join(f"{n} {t}" for n, t in COLUMNS)});
-CREATE TABLE IF NOT EXISTS topics(id INTEGER PRIMARY KEY, title TEXT);
+CREATE TABLE IF NOT EXISTS topics({", ".join(f"{n} {t}" for n, t in TOPIC_COLUMNS)});
 CREATE TABLE IF NOT EXISTS tasks(
   key TEXT PRIMARY KEY, topic INTEGER, lo INTEGER, hi INTEGER,
   cursor INTEGER, done INTEGER DEFAULT 0);
@@ -61,6 +76,14 @@ CREATE TABLE IF NOT EXISTS edits(
 CREATE TABLE IF NOT EXISTS changed(id INTEGER PRIMARY KEY);
 -- where the chat stands: its pts (Telegram's change counter) and the time of the last check for edits
 CREATE TABLE IF NOT EXISTS state(key TEXT PRIMARY KEY, value);
+-- everyone who wrote in the chat, as Telegram showed them last (`updated` is when). A positive id is a person
+-- or a bot, a negative one a channel or a group writing as itself. bio comes with the "bio" extra, bio_at is
+-- when it was asked for.
+CREATE TABLE IF NOT EXISTS users(
+  id INTEGER PRIMARY KEY, name TEXT, username TEXT, bot INTEGER, deleted INTEGER, bio TEXT, bio_at TEXT,
+  updated TEXT);
+-- the chat itself, a fact per row: description, member count, links, what members cannot do... (chatinfo.py)
+CREATE TABLE IF NOT EXISTS chat(key TEXT PRIMARY KEY, value);
 -- the triggers check for an existing row themselves: inside an upsert, OR IGNORE of a trigger's statement is not used
 CREATE TRIGGER IF NOT EXISTS keep_edit AFTER UPDATE OF text, edit_date ON messages
 WHEN new.edit_date IS NOT NULL AND new.edit_date IS NOT old.edit_date AND new.text IS NOT old.text
@@ -81,10 +104,11 @@ def open_db(path):
     # a commit every BATCH_SIZE messages: with WAL it is a cheap append instead of a full journal sync
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("PRAGMA synchronous=NORMAL")
-    have = {c[1] for c in db.execute("PRAGMA table_info(messages)")}
-    for name, typ in COLUMNS:  # databases from older versions lack the newer columns, which the triggers name
-        if have and name not in have:
-            db.execute(f"ALTER TABLE messages ADD COLUMN {name} {typ}")
+    for table, columns in (("messages", COLUMNS), ("topics", TOPIC_COLUMNS)):
+        have = {c[1] for c in db.execute(f"PRAGMA table_info({table})")}
+        for name, typ in columns:  # databases from older versions lack the newer columns, which the triggers name
+            if have and name not in have:
+                db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {typ}")
     db.executescript(SCHEMA)
     db.execute("CREATE INDEX IF NOT EXISTS messages_topic ON messages(topic_id, id)")
     migrate(db)
@@ -100,10 +124,15 @@ def migrate(db):
     if db.execute("SELECT 1 FROM messages LIMIT 1").fetchone():
         if version < 2:
             set_state(db, "lacks_details", 1)  # what those rows miss cannot be added here, only by --refetch
-        if version < 3:
-            # the text files show edits and deletions now, so every export is written again once;
-            # the rows stay, they also list the chats dumped before
+        if version < 4:
+            # what the exports show has changed (3: edits and deletions, 4: pins in the reader), so each is
+            # written again once; the rows stay, they also list the chats dumped before
             db.execute("UPDATE exports SET max_id=-1")
+            # everyone who wrote, under the name on their newest message, until a run asks Telegram
+            db.execute(
+                "INSERT OR IGNORE INTO users(id, name) SELECT sender_id, sender FROM "
+                "(SELECT sender_id, sender, MAX(id) FROM messages WHERE sender_id IS NOT NULL GROUP BY sender_id)"
+            )
     db.execute(f"PRAGMA user_version={FORMAT}")
 
 
@@ -118,6 +147,52 @@ def set_state(db, key, value):
         db.execute("DELETE FROM state WHERE key=?", (key,))
     else:
         db.execute("INSERT OR REPLACE INTO state VALUES(?, ?)", (key, value))
+
+
+def set_chat(db, info):
+    """Replace what is saved about the chat itself with {key: value}; empty values are left out.
+
+    The picture stays unless a new one comes with it: it is downloaded only when it changes.
+    """
+    db.execute("DELETE FROM chat" if "photo" in info else "DELETE FROM chat WHERE key != 'photo'")
+    rows = []
+    for key, value in info.items():
+        if value is None or value is False or value == "" or value == []:
+            continue
+        if key in CHAT_LISTS:
+            value = json.dumps(value, ensure_ascii=False)
+        rows.append((key, int(value) if isinstance(value, bool) else value))
+    db.executemany("INSERT OR REPLACE INTO chat VALUES(?, ?)", rows)
+    db.commit()
+
+
+def get_chat(db):
+    """What is saved about the chat itself, as {key: value}."""
+    info = dict(db.execute("SELECT key, value FROM chat"))
+    for key in CHAT_LISTS & info.keys():
+        info[key] = json.loads(info[key])
+    return info
+
+
+def person(entity, sender_id):
+    """(id, name, username, bot, deleted) of who wrote a message: a user, or a channel or group writing as itself."""
+    name = utils.get_display_name(entity) or None
+    username = getattr(entity, "username", None)
+    if not username:  # with several usernames the first active one is the one shown
+        username = next((u.username for u in getattr(entity, "usernames", None) or () if u.active), None)
+    if not isinstance(entity, types.User):
+        return sender_id, name, username, None, None
+    return sender_id, name, username, int(bool(entity.bot)), int(bool(entity.deleted))
+
+
+def save_users(db, people, when):
+    """Note how these people look now; the name stays when Telegram has none any more (a deleted account)."""
+    db.executemany(
+        "INSERT INTO users(id, name, username, bot, deleted, updated) VALUES(?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(id) DO UPDATE SET name=COALESCE(excluded.name, name), username=excluded.username, "
+        "bot=excluded.bot, deleted=excluded.deleted, updated=excluded.updated",
+        [(*p, when) for p in people],
+    )
 
 
 def reactions_of(m):
@@ -270,6 +345,26 @@ def stored_ids(db, ids):
     return found
 
 
+PIN_MARK = '%"pinned": true%'  # how a pinned message looks in its extra
+
+
+def sync_pins(db, pinned, first=0):
+    """Make the pin marks of the saved messages match the chat's list of pinned messages.
+
+    Telegram lists the pins from the oldest message the account sees on (id `first`), so a mark below
+    that is left as it is.
+    """
+    pinned, known = set(pinned), get_state(db, "pins")
+    if known is None:  # the first time the marks are collected from the messages, later from the list kept here
+        old = {i for (i,) in db.execute("SELECT id FROM messages WHERE extra LIKE ?", (PIN_MARK,))}
+    else:
+        old = set(json.loads(known))
+    old = {i for i in old if i >= first}
+    set_pinned(db, dict.fromkeys(old - pinned, False) | dict.fromkeys(pinned, True))
+    set_state(db, "pins", json.dumps(sorted(pinned)))
+    db.commit()
+
+
 def set_pinned(db, pins):
     """Apply {message id: pinned or not} to the details of the saved messages."""
     for mid, pinned in pins.items():
@@ -322,6 +417,7 @@ def refetch(db, topics=None):
     else:
         db.execute("UPDATE tasks SET cursor=hi + 1, done=0 WHERE topic IS NULL")
         set_state(db, "lacks_details", None)
+        db.execute("UPDATE users SET bio_at=NULL")  # with the "bio" extra, bios are asked for again too
     db.execute("UPDATE exports SET max_id=-1")  # written again; the rows stay, they list the chats dumped before
     db.commit()
 
@@ -330,7 +426,7 @@ def clear(db):
     """Forget everything downloaded, so the chat is fetched again from scratch."""
     db.executescript(
         "DELETE FROM messages; DELETE FROM tasks; DELETE FROM topics; DELETE FROM edits; DELETE FROM changed;"
-        "DELETE FROM state; UPDATE exports SET max_id=-1;"
+        "DELETE FROM state; DELETE FROM users; DELETE FROM chat; UPDATE exports SET max_id=-1;"
     )
 
 

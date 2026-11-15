@@ -1,10 +1,13 @@
 """Offline HTML reader next to an export: index.html plus the topics' data, loaded when a topic is opened."""
 
+import base64
 import html
 import json
 import os
 import re
 from pathlib import Path
+
+from .store import get_chat
 
 DATA_DIR = ".reader"
 PART_ROWS = 10_000  # rows per data file, counted from the start of a list, so appending keeps earlier parts as is
@@ -29,7 +32,35 @@ _EDITS = (
     " FROM edits e JOIN messages m ON m.id = e.id"
 )
 # details the page does not show; "links" is left out too when the Markdown text already has them
-_UNSHOWN = {"channel_post", "rich", "boosts", "effect", "pinned"}
+_UNSHOWN = {"channel_post", "rich", "boosts", "effect"}
+# what the page tells about the chat itself, from the chat table
+_CHAT_SHOWN = (
+    "kind", "about", "members", "admins", "username", "link", "invite", "created", "joined", "linked_chat",
+    "linked_title", "slow_mode", "auto_delete", "members_cannot", "protected", "join_request", "signatures",
+    "hidden_members", "hidden_history", "verified", "scam", "fake", "location", "phone", "updated",
+)  # fmt: skip
+_TOPICS = (
+    "SELECT t.id, t.icon, t.color, t.closed, t.pinned, t.hidden, CAST(strftime('%s', t.date) AS INTEGER), u.name"
+    " FROM topics t LEFT JOIN users u ON u.id = t.creator_id"
+)
+
+
+def chat_meta(db):
+    """The chat table as the page takes it: the facts it shows, the picture as a data: address."""
+    info = get_chat(db)
+    chat = {k: info[k] for k in _CHAT_SHOWN if k in info}
+    if info.get("photo"):
+        chat["photo"] = "data:image/jpeg;base64," + base64.b64encode(info["photo"]).decode()
+    return chat
+
+
+def topic_meta(db):
+    """{topic id: what the list shows of it besides the title}: icon, colour, closed, pinned, made by and when."""
+    found = {}
+    for tid, icon, color, closed, pinned, hidden, date, by in db.execute(_TOPICS):
+        about = {"i": icon, "c": color, "x": closed, "p": pinned, "h": hidden, "at": date, "by": by}
+        found[tid] = {k: v for k, v in about.items() if v}
+    return found
 
 
 def js_literal(obj):
@@ -169,6 +200,7 @@ def write_reader(db, out, chat_title, titles, topics=None, threads=False, since=
         groups = db.execute("SELECT topic_id, COUNT(*), MAX(id) FROM messages GROUP BY topic_id").fetchall()
     groups = [g for g in groups if g[1]]
     forum = not threads and any(t is not None for t, *_ in groups)
+    about = topic_meta(db) if forum else {}
     entries, keep = [], set()
     for t, count, newest in groups:
         key = "all" if t is None else str(t)
@@ -194,12 +226,12 @@ def write_reader(db, out, chat_title, titles, topics=None, threads=False, since=
             title = titles.get(t) or ("General" if t == 1 else f"Topic {t}")
         last = db.execute("SELECT CAST(strftime('%s', date) AS INTEGER) FROM messages WHERE id = ?", (newest,))
         stamps = [p.stat().st_mtime_ns // 1_000_000 for p in paths]
-        entries.append([key, t, title, count, last.fetchone()[0] or 0, stamps])
+        entries.append([key, t, title, count, last.fetchone()[0] or 0, stamps, about.get(t) or None])
         keep.update(p.name for p in paths)
     for f in data.iterdir():
         if f.name not in keep:
             f.unlink()  # parts past the end, topics that no longer exist, older layouts, writes cut short
-    meta = {"title": chat_title, "forum": forum, "threads": threads, "topics": entries}
+    meta = {"title": chat_title, "forum": forum, "threads": threads, "topics": entries, "chat": chat_meta(db)}
     page_parts = {"TITLE": html.escape(chat_title or "Chat"), "CSS": _CSS, "JS": _JS, "META": js_literal(meta)}
     page = re.sub(r"__(TITLE|CSS|JS|META)__", lambda m: page_parts[m[1]], _HTML)
     index = out / "index.html"
@@ -224,8 +256,11 @@ style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
 <div id="app">
 <aside id="side">
 <div class="side-head">
-<h1 id="chat"></h1>
-<p id="chatsub" class="sub"></p>
+<div class="who">
+<button id="chatava" class="cava" type="button" aria-label="About this chat" tabindex="-1"></button>
+<div class="whot"><h1><button id="chat" class="plain" type="button" title="About this chat"></button></h1>
+<p id="chatsub" class="sub"></p></div>
+</div>
 <label class="search filter" id="tfilterbox" hidden><svg viewBox="0 0 24 24" aria-hidden="true">\
 <circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg>\
 <input id="tfilter" type="search" placeholder="Filter topics" autocomplete="off" spellcheck="false"></label>
@@ -246,9 +281,15 @@ spellcheck="false" aria-label="Search in this topic"><span id="count" aria-live=
 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6"/></svg></button>
 <button id="newer" class="icon" type="button" aria-label="Newer match" title="Newer match (Shift+Enter)" disabled>\
 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
+<button id="pinbtn" class="icon" type="button" aria-label="Pinned messages" title="Pinned messages" \
+aria-expanded="false" aria-controls="pins" hidden><svg viewBox="0 0 24 24" aria-hidden="true">\
+<path d="M9 4h6l-.8 5.8 3.3 3.4V15h-11v-1.8l3.3-3.4z"/><path d="M12 15v5.5"/></svg><span id="pincount"></span></button>
 <button id="jumpbtn" class="icon" type="button" aria-label="Go to a date or message" title="Go to a date or message" \
 aria-expanded="false" aria-controls="jump"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" \
 height="15" rx="2.5"/><path d="M4 10h16M8.5 3v4M15.5 3v4"/></svg></button>
+<button id="infobtn" class="icon" type="button" aria-label="About this chat" title="About this chat" hidden>\
+<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5"/>\
+<path d="M12 7.6v.2"/></svg></button>
 </div>
 </header>
 <div id="pill" class="material" aria-hidden="true"></div>
@@ -264,8 +305,17 @@ placeholder="e.g. 4512" autocomplete="off"><button id="jgo" class="btn" type="bu
 <button id="jnewest" class="btn ghost" type="button">Newest</button></div>
 <p id="jerr" class="err" aria-live="polite"></p>
 </div>
+<div id="pins" class="pop material" role="dialog" aria-label="Pinned messages">
+<h3>Pinned messages</h3>
+<div id="pinlist"></div>
+</div>
 </main>
 </div>
+<dialog id="about" aria-label="About this chat">
+<button id="abclose" class="icon abx" type="button" aria-label="Close"><svg viewBox="0 0 24 24" aria-hidden="true">\
+<path d="m7 7 10 10M17 7 7 17"/></svg></button>
+<div id="abbody" class="abb"></div>
+</dialog>
 <div id="toast" class="material" role="status"></div>
 <script>const META = __META__;</script>
 <script>__JS__</script>
@@ -330,6 +380,16 @@ input:focus-visible, #scroller:focus-visible { outline: 0; }
 .side-head h1 { margin: 0 0 2px; font-size: 22px; line-height: 1.15; font-weight: 700; letter-spacing: -.022em;
   overflow-wrap: anywhere; }
 .side-head .filter { margin-top: 12px; width: 100%; }
+.side-head .sub { white-space: normal; }
+.who { display: flex; align-items: center; gap: 12px; }
+.whot { min-width: 0; }
+.cava { flex: none; width: 46px; height: 46px; padding: 0; border: 0; border-radius: 50%; display: grid;
+  place-items: center; color: #fff; font-size: 18px; font-weight: 600; background: var(--a5) center / cover;
+  user-select: none; }
+button.cava:active { transform: scale(.95); }
+.plain { padding: 0; border: 0; background: none; font: inherit; color: inherit; letter-spacing: inherit;
+  text-align: left; overflow-wrap: anywhere; }
+.plain:hover { color: var(--accent); }
 #topics { flex: 1; overflow-y: auto; padding: 4px 8px 16px; padding-bottom: max(16px, env(safe-area-inset-bottom)); }
 .topic { display: grid; grid-template-columns: 40px 1fr auto; grid-template-rows: auto auto; column-gap: 12px;
   align-items: center; width: 100%; padding: 8px 10px; border: 0; border-radius: 10px; background: none;
@@ -342,7 +402,11 @@ input:focus-visible, #scroller:focus-visible { outline: 0; }
   color: #fff; font-weight: 600; font-size: 16px; }
 .tn { font-weight: 600; font-size: 14.5px; letter-spacing: -.005em; white-space: nowrap; overflow: hidden;
   text-overflow: ellipsis; }
-.td { font-size: 12px; color: var(--text3); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tav.em { background: var(--fill); font-size: 21px; font-weight: 400; }
+.topic[aria-current="true"] .tav.em { background: rgba(255, 255, 255, .22); }
+.td { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text3);
+  font-variant-numeric: tabular-nums; white-space: nowrap; }
+.td svg { width: 13px; height: 13px; }
 .tc { grid-column: 2 / 4; font-size: 13px; color: var(--text2); font-variant-numeric: tabular-nums; }
 .nomatch { padding: 16px 10px; color: var(--text2); font-size: 14px; }
 
@@ -371,6 +435,9 @@ input:focus-visible, #scroller:focus-visible { outline: 0; }
 .icon:active { transform: scale(.92); background: var(--fill); }
 .icon:disabled { opacity: .3; pointer-events: none; }
 .icon[aria-expanded="true"] { background: var(--accent-fill); }
+#pinbtn { width: auto; min-width: 34px; padding: 0 7px; grid-auto-flow: column; gap: 3px; font-size: 12.5px;
+  font-weight: 600; font-variant-numeric: tabular-nums; }
+#pincount:empty { display: none; }
 
 #scroller { position: absolute; inset: 0; overflow-y: auto; overflow-x: hidden; overflow-anchor: none;
   overscroll-behavior: contain; scrollbar-width: none; outline: 0; }
@@ -402,6 +469,8 @@ input:focus-visible, #scroller:focus-visible { outline: 0; }
 .msg:hover .gtime, .gtime:focus { opacity: 1; }
 @media (hover: none) { .gtime { opacity: .8; } }
 .edited { font-size: 12px; color: var(--text3); }
+.pinm { display: inline-flex; align-self: center; color: var(--text3); }
+.pinm svg { width: 13px; height: 13px; }
 .edited.del { color: var(--c0); }
 .msg.gone .body > :not(.meta):not(.foot):not(.hist), .svc.gone > span { opacity: .55; }
 .hist { max-width: 520px; margin: 3px 0 2px; }
@@ -527,6 +596,39 @@ a.kb { color: var(--accent); }
   opacity: 0; transform: scale(.94); visibility: hidden; }
 .pop.open { opacity: 1; transform: none; visibility: visible;
   transition: opacity .18s ease-out, transform .35s var(--ease); }
+#pins { width: 340px; max-height: min(62vh, 460px); padding: 8px; overflow-y: auto; }
+#pins h3 { margin: 6px 8px; font-size: 12px; font-weight: 600; color: var(--text2); }
+.pi { display: block; width: 100%; padding: 7px 8px; border: 0; border-radius: 10px; background: none;
+  text-align: left; font-size: 13px; line-height: 1.35; }
+.pi:hover { background: var(--fill2); }
+.pi:active { background: var(--fill); }
+.pi span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pin { font-weight: 600; }
+.pin .pid { display: inline; margin-left: 6px; font-weight: 400; color: var(--text3);
+  font-variant-numeric: tabular-nums; }
+.pis { color: var(--text2); }
+#about { width: min(440px, calc(100vw - 24px)); max-height: min(82vh, 720px); padding: 0; border: 0;
+  border-radius: 20px; background: var(--mat-solid); color: var(--text); box-shadow: var(--shadow); overflow: hidden; }
+#about[open] { display: flex; flex-direction: column; animation: sheet .35s var(--ease); }
+#about::backdrop { background: rgba(0, 0, 0, .32); }
+@keyframes sheet { from { opacity: 0; transform: translateY(10px) scale(.96); } }
+.abx { position: absolute; top: 10px; right: 10px; color: var(--text2); }
+.abb { overflow-y: auto; padding: 28px 22px 20px; }
+.abh { display: grid; justify-items: center; gap: 3px; margin-bottom: 16px; text-align: center; }
+.abh .cava { width: 76px; height: 76px; margin-bottom: 8px; font-size: 30px; }
+.abh h2 { margin: 0; font-size: 20px; line-height: 1.2; font-weight: 700; letter-spacing: -.02em;
+  overflow-wrap: anywhere; }
+.abh .sub { white-space: normal; }
+.abt { margin: 0 0 16px; font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.abt a, .abl a { color: var(--accent); text-decoration: none; }
+.abt a:hover, .abl a:hover { text-decoration: underline; }
+.abl { margin: 0; border-radius: 12px; background: var(--fill2); }
+.abl > div { display: flex; justify-content: space-between; gap: 16px; padding: 9px 12px; font-size: 14px; }
+.abl > div + div { box-shadow: 0 -1px 0 var(--sep); }
+.abl dt { flex: none; color: var(--text2); }
+.abl dd { min-width: 0; margin: 0; text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.abf { margin: 12px 2px 0; font-size: 12px; color: var(--text3); text-align: center;
+  font-variant-numeric: tabular-nums; }
 .field { display: block; margin-bottom: 12px; font-size: 12px; font-weight: 600; color: var(--text2); }
 .field input { display: block; width: 100%; margin-top: 5px; height: 34px; padding: 0 10px; border: 0;
   border-radius: 9px; background: var(--fill); color: var(--text); font-size: 14px; font-weight: 400; outline: 0; }
@@ -563,7 +665,7 @@ a.kb { color: var(--accent); }
   .alb:not(.alb-s)::before { left: 50px; }
   .gtime { width: 40px; }
   #down { right: 16px; }
-  .pop { right: 8px; left: 8px; width: auto; transform-origin: calc(100% - 22px) 0; }
+  .pop, #pins { right: 8px; left: 8px; width: auto; transform-origin: calc(100% - 22px) 0; }
 }
 @media (prefers-reduced-motion: reduce) {
   .topic, .icon, .btn, .quote, #down, #toast, .pop, #thumb { transform: none !important; }
@@ -571,6 +673,8 @@ a.kb { color: var(--accent); }
   #app:not(.single) #main { opacity: 0; transition: opacity .2s ease-out, visibility 0s .2s; }
   #app.open #main { opacity: 1; transition: opacity .2s ease-out; }
   .pop, .pop.open, #toast, #down { transition-property: opacity, visibility; }
+  #about[open] { animation: none; }
+  button.cava { transform: none !important; }
   .spin { border-color: var(--accent); animation: pulse 1s ease-in-out infinite alternate; }
 }
 """
@@ -588,7 +692,10 @@ const BATCH = 40, KEEP = 150, MAXROWS = 380;
 const ID = 0, DATE = 1, SND = 2, TEXT = 3, REPLY = 4, FWD = 5, MEDIA = 6, ACT = 7, GRP = 8, EDIT = 9,
   REACT = 10, VIEWS = 11, REPLIES = 12, EXTRA = 13, HEAD = 14;
 const reduced = matchMedia("(prefers-reduced-motion: reduce)");
-const TOPICS = META.topics.map(([k, id, title, count, last, v]) => ({ k, id, title, count, last, v }));
+const TOPICS = META.topics.map(([k, id, title, count, last, v, info]) =>
+  ({ k, id, title, count, last, v, info: info || {} }));
+const CHAT = META.chat || {};
+const pinbtn = $("pinbtn"), pins = $("pins"), about = $("about");
 const byKey = new Map(TOPICS.map((t) => [t.k, t]));
 const byId = new Map(TOPICS.map((t) => [t.id, t]));
 const single = !META.forum;
@@ -649,6 +756,8 @@ const ICONS = {
     '<circle cx="15" cy="15" r=".9"/><circle cx="15" cy="9" r=".9"/><circle cx="9" cy="15" r=".9"/>',
   fwd: '<path d="m14 5 6 6-6 6"/><path d="M20 11H11a7 7 0 0 0-7 7v1"/>',
   check: '<path d="m6.5 12.5 3.5 3.5 7.5-8"/>',
+  tack: '<path d="M9 4h6l-.8 5.8 3.3 3.4V15h-11v-1.8l3.3-3.4z"/><path d="M12 15v5.5"/>',
+  lock: '<rect x="5.5" y="10.5" width="13" height="9.5" rx="2.2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/>',
 };
 function icon(name) {
   const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -913,7 +1022,7 @@ function goneTag(when) {
   g.title = `No longer in Telegram, found missing on ${fDayY.format(when * 1000)}`;
   return g;
 }
-function history(edits) {  // what an edited message said before
+function earlier(edits) {  // what an edited message said before
   const d = h("details", "hist");
   d.append(h("summary", null, edits.length === 1 ? "Earlier text" : `${edits.length} earlier texts`));
   for (const [when, text] of edits) {
@@ -981,6 +1090,12 @@ function renderRow(i) {
     meta.append(h("span", "name", nameOf(s)));
     for (const x of [ex.author, ex.rank, ex.via_bot && "via " + ex.via_bot]) if (x) meta.append(h("span", "rank", x));
     meta.append(t);
+    if (ex.pinned) {
+      const p = h("span", "pinm");
+      p.title = "Pinned";
+      p.append(icon("tack"));
+      meta.append(p);
+    }
     if (r[EDIT]) meta.append(h("span", "edited", "edited"));
     if (ex.deleted) meta.append(goneTag(ex.deleted));
     body.append(meta);
@@ -1014,7 +1129,7 @@ function renderRow(i) {
     rich(t, r[TEXT]);
     body.append(t);
   }
-  if (ex.edits) body.append(history(ex.edits));
+  if (ex.edits) body.append(earlier(ex.edits));
   if (media === "WebPage") body.append(ex.webpage ? webCard(ex.webpage) : chip());
   if (ex.buttons) body.append(keyboard(ex.buttons));
   if (ex.links) body.append(note("Links:", null, ex.links));
@@ -1033,6 +1148,7 @@ function renderRow(i) {
   const stats = [];
   if (r[VIEWS]) stats.push(`${compact.format(r[VIEWS])} views`);
   if (r[REPLIES]) stats.push(plural(r[REPLIES], "reply", "replies"));
+  if (ex.pinned && !head) stats.push("pinned");
   if (r[EDIT] && !head) stats.push("edited");
   if (stats.length) {
     const st = h("span", "stats", stats.join(" · "));
@@ -1359,6 +1475,7 @@ function clearSearch() {
 // --- go to date or message
 
 function togglePop(open) {
+  if (open) togglePins(false);
   pop.classList.toggle("open", open);
   jumpbtn.setAttribute("aria-expanded", String(open));
   jerr.textContent = "";
@@ -1367,6 +1484,36 @@ function togglePop(open) {
 jumpbtn.addEventListener("click", () => togglePop(!pop.classList.contains("open")));
 document.addEventListener("pointerdown", (e) => {
   if (pop.classList.contains("open") && !pop.contains(e.target) && !jumpbtn.contains(e.target)) togglePop(false);
+  if (pins.classList.contains("open") && !pins.contains(e.target) && !pinbtn.contains(e.target)) togglePins(false);
+});
+
+// --- pinned messages of the open topic
+
+function togglePins(open) {
+  if (open) {
+    togglePop(false);
+    const d = S.d, items = [];
+    for (let n = d.pins.length - 1; n >= 0; n--) {  // the newest first, as the app lists them
+      const i = d.pins[n], r = d.rows[i], b = h("button", "pi"), who = h("span", "pin", nameOf(sender(d, r)));
+      b.type = "button";
+      b.dataset.i = i;
+      who.append(h("span", "pid", shortDate(r[DATE])));
+      b.append(who, h("span", "pis", snippet(d, r)));
+      items.push(b);
+    }
+    $("pinlist").replaceChildren(...items);
+    pins.scrollTop = 0;
+  }
+  pins.classList.toggle("open", open);
+  pinbtn.setAttribute("aria-expanded", String(open));
+}
+pinbtn.addEventListener("click", () => { if (S.d) togglePins(!pins.classList.contains("open")); });
+$("pinlist").addEventListener("click", (e) => {
+  const b = e.target.closest(".pi");
+  if (!b) return;
+  togglePins(false);
+  history.replaceState(null, "", link(S.d.rows[+b.dataset.i][ID]));
+  show(+b.dataset.i);
 });
 const isoDay = (t) => {
   const d = new Date(t * 1000);
@@ -1406,8 +1553,10 @@ $("jnewest").addEventListener("click", () => { if (S.d) { togglePop(false); jump
 
 document.addEventListener("keydown", (e) => {
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+  if (about.open) return;  // the dialog closes itself on Escape
   if (e.key === "Escape") {
     if (pop.classList.contains("open")) { togglePop(false); jumpbtn.focus(); return; }
+    if (pins.classList.contains("open")) { togglePins(false); pinbtn.focus(); return; }
     if (document.activeElement === q || q.value) { clearSearch(); q.blur(); sc.focus({ preventScroll: true }); }
     return;
   }
@@ -1429,7 +1578,7 @@ window.TGR = {
   e(k, n) { const p = part(k, n); if (p) p.done = true; },
 };
 function merge(parts) {  // one list; sender indexes are per part, so map them to one table
-  const d = { rows: [], senders: [], idx: new Map() }, seen = new Map();
+  const d = { rows: [], senders: [], idx: new Map(), pins: [] }, seen = new Map();
   for (const p of parts) {
     const map = p.senders.map((s) => {
       const key = JSON.stringify(s);
@@ -1438,6 +1587,7 @@ function merge(parts) {  // one list; sender indexes are per part, so map them t
     });
     for (const r of p.rows) {
       r[SND] = map[r[SND]];
+      if (r[EXTRA] && r[EXTRA].pinned && !r[EXTRA].deleted) d.pins.push(d.rows.length);
       d.idx.set(r[ID], d.rows.length);
       d.rows.push(r);
     }
@@ -1483,6 +1633,75 @@ function load(k, progress) {
   });
 }
 
+// --- about the chat: META.chat, as the last run found it
+
+const KINDS = { forum: "Forum", group: "Group", channel: "Channel", user: "Private chat", bot: "Bot" };
+function membersText() {
+  if (!CHAT.members) return "";
+  return CHAT.kind === "channel" ? plural(CHAT.members, "subscriber") : plural(CHAT.members, "member");
+}
+function avatar(el) {  // the chat's picture, or its initials on a colour
+  if (CHAT.photo) el.style.backgroundImage = `url("${CHAT.photo}")`;
+  else {
+    el.textContent = initials(META.title || "");
+    el.style.backgroundColor = `var(--a${hash32(META.title || "") % 7})`;
+  }
+}
+function span(n) {  // seconds as the largest unit that fits: 30 seconds, 1 hour, 7 days
+  for (const [size, word] of [[86400, "day"], [3600, "hour"], [60, "minute"]]) {
+    if (n >= size && n % size === 0) return plural(n / size, word);
+  }
+  return plural(n, "second");
+}
+function buildAbout() {
+  const body = $("abbody"), head = h("div", "abh"), av = h("span", "cava"), dl = h("dl", "abl");
+  avatar(av);
+  const marks = [KINDS[CHAT.kind], membersText(), CHAT.verified && "verified", CHAT.scam && "marked as scam",
+    CHAT.fake && "marked as fake"];
+  head.append(av, h("h2", null, META.title), h("p", "sub", join(marks)));
+  body.replaceChildren(head);
+  if (CHAT.about) {
+    const t = h("div", "abt");
+    rich(t, CHAT.about);
+    body.append(t);
+  }
+  const row = (label, value, url) => {
+    if (value == null || value === "") return;
+    const r = h("div"), dd = h("dd"), v = out("span", null, safeUrl(url));
+    v.textContent = value;
+    dd.append(v);
+    r.append(h("dt", null, label), dd);
+    dl.append(r);
+  };
+  const day = (s) => (s ? fDayY.format(new Date(s)) : null);
+  row("Username", CHAT.username && "@" + CHAT.username, CHAT.link);
+  row("Invite link", CHAT.invite, CHAT.invite);
+  row("Phone", CHAT.phone && "+" + CHAT.phone);
+  row("Created", day(CHAT.created));
+  row("Joined", day(CHAT.joined));
+  row("Admins", CHAT.admins && num.format(CHAT.admins));
+  row(CHAT.kind === "channel" ? "Discussion group" : "Linked channel", CHAT.linked_title || CHAT.linked_chat);
+  row("Slow mode", CHAT.slow_mode && span(CHAT.slow_mode) + " between messages");
+  row("Auto-delete", CHAT.auto_delete && "after " + span(CHAT.auto_delete));
+  row("Location", CHAT.location);
+  row("Settings", join([CHAT.protected && "saving and forwarding are off", CHAT.join_request && "joining by request",
+    CHAT.signatures && "posts are signed", CHAT.hidden_members && "the member list is hidden",
+    CHAT.hidden_history && "new members do not see earlier messages"], ", "));
+  row("Members cannot", (CHAT.members_cannot || []).map((x) => x.replace(/_/g, " ")).join(", "));
+  if (dl.firstChild) body.append(dl);
+  const total = TOPICS.reduce((s, t) => s + t.count, 0);
+  body.append(h("p", "abf", join([`${plural(total, "message")} saved`,
+    CHAT.updated && `as of ${fDayY.format(new Date(CHAT.updated))}, ${fTime.format(new Date(CHAT.updated))}`])));
+}
+function openAbout() {
+  buildAbout();
+  about.showModal();
+  $("abbody").scrollTop = 0;
+}
+for (const id of ["chat", "chatava", "infobtn"]) $(id).addEventListener("click", openAbout);
+$("abclose").addEventListener("click", () => about.close());
+about.addEventListener("click", (e) => { if (e.target === about) about.close(); });  // a click on the backdrop
+
 // --- topics and navigation
 
 function setState(title, text, spin) {
@@ -1496,8 +1715,13 @@ function chrome(t) {
   const parts = [];
   if (t) parts.push(plural(t.count, "message"));
   if (t && META.threads) parts.push("grouped by thread");
+  if (t && t.info.at) {
+    parts.push(`created ${fShortY.format(t.info.at * 1000)}` + (t.info.by ? ` by ${t.info.by}` : ""));
+  }
+  if (t && t.info.x) parts.push("closed");
   if (!t) parts.push(plural(TOPICS.length, "topic"));
-  $("sub").textContent = parts.join(" · ");
+  if (!t || single) parts.push(membersText());
+  $("sub").textContent = join(parts);
   $("tools").hidden = !t;
   document.title = t && !single ? `${t.title} – ${META.title}` : META.title;
 }
@@ -1512,6 +1736,8 @@ async function openTopic(k, msgId) {
     scrub.classList.add("off");
     down.classList.remove("show");
     togglePop(false);
+    togglePins(false);
+    pinbtn.hidden = true;
   }
   app.classList.add("open");
   for (const b of document.querySelectorAll(".topic")) b.setAttribute("aria-current", String(b.dataset.k === k));
@@ -1530,6 +1756,8 @@ async function openTopic(k, msgId) {
     if (S.k !== k) return;
     S.d = d;
     setState();
+    pinbtn.hidden = !d.pins.length;
+    $("pincount").textContent = d.pins.length > 1 ? num.format(d.pins.length) : "";
     if (!d.rows.length) { setState("No messages"); return; }
     if (!META.threads) {
       jdate.min = isoDay(d.rows[0][DATE]);
@@ -1567,20 +1795,30 @@ $("back").addEventListener("click", () => {
 
 function buildTopics() {
   const nav = $("topics"), filter = $("tfilter");
-  const sorted = TOPICS.slice().sort((a, b) => b.last - a.last);
+  // pinned topics first, in the order they are pinned in, then the ones written in last
+  const sorted = TOPICS.slice().sort((a, b) => (a.info.p || 1e9) - (b.info.p || 1e9) || b.last - a.last);
   const total = TOPICS.reduce((s, t) => s + t.count, 0);
   $("chat").textContent = META.title;
-  $("chatsub").textContent = `${plural(TOPICS.length, "topic")} · ${plural(total, "message")}`;
+  $("chatsub").textContent = join([plural(TOPICS.length, "topic"), plural(total, "message"), membersText()]);
+  avatar($("chatava"));
   const items = sorted.map((t) => {
-    const b = h("button", "topic");
+    const b = h("button", "topic"), info = t.info;
     b.type = "button";
     b.dataset.k = t.k;
     b.setAttribute("aria-current", "false");
-    const av = h("span", "tav", initials(t.title).slice(0, 1) || "#");
-    av.style.background = `var(--a${(t.id == null ? 0 : Math.abs(t.id)) % 7})`;
+    const av = h("span", "tav", info.i || initials(t.title).slice(0, 1) || "#");
+    if (info.i) av.classList.add("em");
+    else if (info.c) {  // Telegram's own icon colours are light, so the letter on them is dark
+      av.style.background = "#" + info.c.toString(16).padStart(6, "0");
+      av.style.color = "rgba(0, 0, 0, .62)";
+    } else av.style.background = `var(--a${(t.id == null ? 0 : Math.abs(t.id)) % 7})`;
     av.setAttribute("aria-hidden", "true");
-    const count = h("span", "tc", plural(t.count, "message"));
-    b.append(av, h("span", "tn", t.title), h("span", "td", shortDate(t.last)), count);
+    const count = h("span", "tc", plural(t.count, "message")), td = h("span", "td");
+    if (info.p) td.append(icon("tack"));
+    if (info.x) td.append(icon("lock"));
+    td.append(shortDate(t.last));
+    td.title = join([info.p && "Pinned topic", info.x && "Closed topic"], ", ");
+    b.append(av, h("span", "tn", t.title), td, count);
     b.addEventListener("click", () => {
       if (location.hash === `#topic/${t.k}`) openTopic(t.k);
       else location.hash = `#topic/${t.k}`;
@@ -1604,8 +1842,10 @@ function buildTopics() {
   }
 }
 
-if (single) app.classList.add("single");
-else buildTopics();
+if (single) {
+  app.classList.add("single");
+  $("infobtn").hidden = !Object.keys(CHAT).length;
+} else buildTopics();
 chrome(single ? TOPICS[0] || null : null);
 if (single && !TOPICS.length) setState("No messages");
 route();

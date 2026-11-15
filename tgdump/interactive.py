@@ -24,6 +24,7 @@ from telethon.tl.types import Channel, Chat, User
 
 from . import style
 from .accounts import login, make_client, new_session_name, open_accounts
+from .chatinfo import chat_kind
 from .config import DATA, OPTIONS, ensure_api_keys, load_settings, out_dir, save_options, save_settings, saved_options
 from .fetch import Takeouts, dump_chat, saved_by, saved_dumps
 from .scope import KINDS, Scope, parse_date
@@ -90,14 +91,6 @@ class ChatItem:
     def matches(self, q):
         q = q.lower().lstrip("@")
         return q in self.title.lower() or (self.username and q in self.username.lower()) or q == str(self.peer_id)
-
-
-def chat_kind(e):
-    if isinstance(e, User):
-        return "bot" if e.bot else "user"
-    if isinstance(e, Channel):
-        return "forum" if e.forum else "group" if e.megagroup else "channel"
-    return "group"
 
 
 def make_item(e, public=False):
@@ -591,9 +584,12 @@ class ProgressLine:
                 "connecting": "connecting accounts…",
                 "planning": "reading chat info…",
                 "checking": "looking for edits and deletions…",
+                "people": "asking about the people in the chat…",
                 "exporting": "writing topic folders…",
                 "done": "done",
             }.get(phase, phase)
+            if phase == "people" and s.get("people"):
+                text = "reading bios… {:,} of {:,}".format(*s["people"])
             return f"{paint(spin, 'blue')} {label}{paint(text, 'dim')}"
 
         work_total, work_left = s.get("work_total", 0), s.get("work_left", 0)

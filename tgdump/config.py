@@ -27,6 +27,7 @@ OPTIONS = {
     "meta": "reactions, views, forwards and reply counts",
     "markdown": "formatting and hidden links, as Markdown in text_md",
     "comments": "for channels: also dump the comments under posts",
+    "bio": "the bio of everyone who wrote in the chat: a request per person, so slow for a big chat",
     "takeout": "Telegram's export mode, about 10x faster (allow it once in the Telegram app)",
     "html": "index.html in the chat folder to read the dump in a browser, offline",
 }

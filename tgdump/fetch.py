@@ -15,7 +15,8 @@ from telethon.tl.functions.users import GetUsersRequest
 from telethon.tl.types import Channel, InputUserSelf, PeerChannel
 
 from .accounts import resolve
-from .changes import Changes, apply_changes, channel_changes, channel_pts
+from .changes import Changes, apply_changes, channel_changes
+from .chatinfo import add_photo, chat_info, fetch_bios, fetch_topics, pinned_ids, refresh_users
 from .config import DATA
 from .export import export_db
 from .scope import NO_SCOPE, Scope
@@ -23,9 +24,11 @@ from .store import (
     BATCH_SIZE,
     COLUMN_NAMES,
     clear,
+    get_chat,
     get_state,
     open_db,
     outdated,
+    person,
     plan_full,
     plan_topics,
     range_work_left,
@@ -33,7 +36,10 @@ from .store import (
     recheck_topics,
     refetch,
     save,
+    save_users,
+    set_chat,
     set_state,
+    sync_pins,
     to_row,
 )
 from .util import fmt_duration, iso, parse_chat
@@ -50,6 +56,7 @@ class Job:
     forum: bool
     options: frozenset
     iter_kwargs: dict
+    when: str  # the time of this run, noted on the people seen in it
     gone_at: str | None = None  # the time to mark saved messages with when Telegram no longer lists them
     firsts: dict = field(default_factory=dict)  # id(client) -> the oldest message id its account sees
     marked: int = 0  # messages marked as deleted so far
@@ -61,13 +68,17 @@ async def run_task(client, entity, job, progress, key):
     if topic is not None:
         kw["reply_to"] = topic
     gone = (job.firsts.get(id(client), 0), job.gone_at) if job.gone_at else None
-    rows = []
+    rows, people = [], {}
     async for m in client.iter_messages(entity, offset_id=cursor, min_id=lo, wait_time=0, **kw):
         rows.append(to_row(m, job.forum, job.options))
+        if m.sender is not None and m.sender_id:
+            people[m.sender_id] = person(m.sender, m.sender_id)
         if len(rows) >= BATCH_SIZE:
+            save_users(job.db, people.values(), job.when)
             job.marked += save(job.db, key, rows, gone=gone)
             progress["n"] += len(rows)
-            rows = []
+            rows, people = [], {}
+    save_users(job.db, people.values(), job.when)
     job.marked += save(job.db, key, rows, done=True, gone=gone)
     progress["n"] += len(rows)
     progress["left"] -= 1
@@ -83,26 +94,6 @@ async def report(progress, start):
         await asyncio.sleep(10)
         rate = progress["n"] / (time.monotonic() - start) * 60
         log.info(f"{progress['n']} messages, ~{rate:.0f}/min, tasks left: {progress['left']}")
-
-
-async def fetch_topics(client, entity, db):
-    offset_date, offset_id, offset_topic = None, 0, 0
-    while True:
-        res = await client(
-            functions.messages.GetForumTopicsRequest(
-                peer=entity, offset_date=offset_date, offset_id=offset_id, offset_topic=offset_topic, limit=100
-            )
-        )
-        db.executemany(
-            "INSERT OR REPLACE INTO topics VALUES(?, ?)", [(t.id, getattr(t, "title", None)) for t in res.topics]
-        )
-        if len(res.topics) < 100:
-            break
-        last = res.topics[-1]
-        msgs = {m.id: m for m in res.messages}
-        offset_topic, offset_id = last.id, getattr(last, "top_message", 0)
-        offset_date = msgs[offset_id].date if offset_id in msgs else None
-    db.commit()
 
 
 async def enter_takeout(stack, client):
@@ -214,8 +205,11 @@ def copy_scope(whole_path, db_path, scope, sender_id=None):
         db.execute("ATTACH DATABASE ? AS whole", (str(whole_path),))
         db.execute("DELETE FROM messages")
         db.execute(f"INSERT INTO messages({cols}) SELECT {cols} FROM whole.messages WHERE {where}", params)
-        db.execute("DELETE FROM topics")
-        db.execute("INSERT INTO topics SELECT id, title FROM whole.topics")
+        for table in ("topics", "chat"):
+            db.execute(f"DELETE FROM {table}")
+            db.execute(f"INSERT INTO {table} SELECT * FROM whole.{table}")
+        db.execute("DELETE FROM users")
+        db.execute("INSERT INTO users SELECT * FROM whole.users WHERE id IN (SELECT sender_id FROM messages)")
         db.execute("DELETE FROM edits")
         db.execute("INSERT INTO edits SELECT * FROM whole.edits WHERE id IN (SELECT id FROM messages)")
         db.execute("DELETE FROM changed")  # the export that follows is written whole
@@ -364,6 +358,7 @@ async def dump_chat(
             return out
 
     async with contextlib.AsyncExitStack() as stack:
+        plain = [c for c, _ in pairs]  # for what Telegram does not serve in export mode
         if "takeout" in options:
             own = takeouts or await stack.enter_async_context(Takeouts())
             pairs = await own.enter(pairs)
@@ -392,9 +387,9 @@ async def dump_chat(
         newest = db.execute("SELECT date, id FROM messages ORDER BY id DESC LIMIT 1").fetchone()
         last = get_state(db, "checked") or (newest and newest[0])
         had, had_edits = db.execute("SELECT (SELECT COUNT(*) FROM messages), (SELECT COUNT(*) FROM edits)").fetchone()
-        seen, pts_now, window = Changes(), None, None
+        seen, window = Changes(), None
+        info, pts_now = await chat_info(client, entity)
         if check and isinstance(entity, Channel):
-            pts_now = await channel_pts(client, entity)
             pts = get_state(db, "pts")
             if pts and not again:
                 stats["phase"] = "checking"
@@ -470,7 +465,7 @@ async def dump_chat(
 
         # a search by author or type lists only some of the messages, so it cannot tell which ones are gone
         gone_at = now if (check or again) and not scope.iter_kwargs() else None
-        job = Job(db, forum, options, scope.iter_kwargs(), gone_at, firsts)
+        job = Job(db, forum, options, scope.iter_kwargs(), now, gone_at, firsts)
         helpers = [asyncio.create_task(report(progress, time.monotonic())), asyncio.create_task(mirror())]
         try:
             await asyncio.gather(*(worker(queue, c, e, job, progress) for _ in range(workers) for c, e in pairs))
@@ -487,6 +482,22 @@ async def dump_chat(
                     set_state(db, "pts", seen.pts or pts_now)
                 set_state(db, "checked", now)
             db.commit()
+        if not scope:
+            # the chat's own list of pins: a message unpinned long ago is found only there
+            pins = None if topics else await pinned_ids(pairs[0][0], entity)
+            if pins is not None:
+                sync_pins(db, pins, first)
+            stats["phase"] = "people"
+            renamed = await refresh_users(plain, db, now)
+            if renamed:
+                log.info(f"People saved by earlier runs asked about again: {renamed}")
+        if "bio" in options:
+            await fetch_bios(plain, db, now, stats)
+        created = db.execute("SELECT date FROM messages WHERE id = 1 AND action LIKE '%Create'").fetchone()
+        if created:  # a channel tells its members only when they joined; its first message tells the rest
+            info.setdefault("created", created[0])
+        await add_photo(client, entity, info, get_chat(db).get("photo_id"))
+        set_chat(db, {**info, "updated": now})
         saved, edits = db.execute("SELECT (SELECT COUNT(*) FROM messages), (SELECT COUNT(*) FROM edits)").fetchone()
         stats.update(stored=saved, new=saved - had, edited=edits - had_edits, deleted=job.marked)
         log.info(f"Fetched this run: {progress['n']}, new: {saved - had}, total in database: {saved}")

@@ -247,12 +247,12 @@ def test_export_writes_one_folder_per_topic(db, tmp_path):
         to_row(msg(13, "general"), forum=True),
     ]
     save(db, "k", rows)
-    db.execute("INSERT INTO topics VALUES(10, 'Tips & tricks!')")
+    db.execute("INSERT INTO topics(id, title) VALUES(10, 'Tips & tricks!')")
 
     out = export(db, 123, "My chat", out_root=tmp_path)
 
     assert out == tmp_path / "123_My_chat"
-    assert sorted(p.name for p in out.iterdir()) == ["10_Tips_tricks", "1_General"]
+    assert sorted(p.name for p in out.iterdir()) == ["10_Tips_tricks", "1_General", "chat.json"]
     lines = (out / "10_Tips_tricks" / "messages.jsonl").read_text(encoding="utf-8").splitlines()
     assert [json.loads(line)["text"] for line in lines] == ["hello", "answer"]
     assert "views" not in json.loads(lines[0])  # optional fields that were not collected are left out
@@ -549,14 +549,14 @@ def test_account_is_found_by_session_name_username_or_id():
 
 def test_repeat_export_appends_after_a_new_or_renamed_topic(db, tmp_path):
     db.execute("INSERT INTO tasks(key, lo, cursor) VALUES('k', 0, 0)")
-    db.execute("INSERT INTO topics VALUES(10, 'Old name')")
+    db.execute("INSERT INTO topics(id, title) VALUES(10, 'Old name')")
     save(db, "k", [to_row(msg(11, "first", reply_to=topic_reply(10)), forum=True)])
     out = export(db, 3, "Forum", out_root=tmp_path)
     old = out / "10_Old_name" / "messages.txt"
     old.write_text(old.read_text(encoding="utf-8") + "marker\n", encoding="utf-8")
 
     db.execute("UPDATE topics SET title='New name' WHERE id=10")
-    db.execute("INSERT INTO topics VALUES(20, 'Fresh')")
+    db.execute("INSERT INTO topics(id, title) VALUES(20, 'Fresh')")
     rows = [
         to_row(msg(21, "second", reply_to=topic_reply(10)), forum=True),
         to_row(msg(22, "hi", reply_to=topic_reply(20)), forum=True),
@@ -564,7 +564,7 @@ def test_repeat_export_appends_after_a_new_or_renamed_topic(db, tmp_path):
     save(db, "k", rows)
     export(db, 3, "Forum", out_root=tmp_path)
 
-    assert sorted(p.name for p in out.iterdir()) == ["10_New_name", "20_Fresh"]
+    assert sorted(p.name for p in out.iterdir() if p.is_dir()) == ["10_New_name", "20_Fresh"]
     lines = (out / "10_New_name" / "messages.txt").read_text(encoding="utf-8").splitlines()
     assert lines[1] == "marker" and lines[2].endswith("second")  # the folder was renamed and appended to
 

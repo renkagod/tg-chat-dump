@@ -336,6 +336,18 @@ class Found(list):
     total = 0
 
 
+class Session:
+    """The people an account has met: it can ask Telegram only about them."""
+
+    def __init__(self):
+        self.met = set()
+
+    def get_input_entity(self, peer):
+        if peer.user_id not in self.met:
+            raise ValueError("never met")
+        return types.InputPeerUser(peer.user_id, access_hash=1)
+
+
 class Telegram:
     """A supergroup as Telegram keeps it: its messages, its change log and the pts the log stands at."""
 
@@ -343,6 +355,12 @@ class Telegram:
         self.messages = {m.id: m for m in messages}
         self.pts, self.log, self.too_long, self.asked = 100, [], False, []
         self.entity = entity or Channel(7, "Club", ChatPhotoEmpty(), DATE, megagroup=True, access_hash=1)
+        self.session, self.flood_sleep_threshold = Session(), 60
+        self.full = {}  # what the chat's own page says
+        self.people, self.bios = {}, {}  # user id -> the user as shown now, and their bio
+        self.topics, self.emoji = [], {}  # the forum's topics; custom emoji id -> the emoji it stands for
+        self.users_asked = 0  # how many requests about people were made
+        self.users_limit = None  # how many of them Telegram answers before it says to wait
 
     async def get_entity(self, peer):
         return self.entity
@@ -360,9 +378,11 @@ class Telegram:
         out.total = len(self.messages)
         return out
 
-    def iter_messages(self, entity, offset_id=0, min_id=0, wait_time=None):
+    def iter_messages(self, entity, offset_id=0, min_id=0, wait_time=None, filter=None):
         async def walk():
             for m in sorted(self.messages.values(), key=lambda m: -m.id):
+                if filter is types.InputMessagesFilterPinned and not m.pinned:
+                    continue
                 if m.id > min_id and (not offset_id or m.id < offset_id):
                     yield m
 
@@ -370,7 +390,26 @@ class Telegram:
 
     async def __call__(self, request):
         if isinstance(request, functions.channels.GetFullChannelRequest):
-            return SimpleNamespace(full_chat=SimpleNamespace(pts=self.pts, linked_chat_id=None))
+            return SimpleNamespace(full_chat=SimpleNamespace(pts=self.pts, **self.full), chats=[])
+        if isinstance(request, functions.users.GetFullUserRequest):
+            uid = getattr(request.id, "user_id", None) or request.id.id
+            if isinstance(request.id, types.PeerUser) and uid not in self.session.met:
+                raise ValueError("never met")
+            return SimpleNamespace(full_user=SimpleNamespace(about=self.bios.get(uid)), chats=[])
+        if isinstance(request, functions.users.GetUsersRequest):
+            self.users_asked += 1
+            if self.users_limit is not None and self.users_asked > self.users_limit:
+                raise errors.FloodWaitError(None, 61)
+            return [self.people[u.user_id] for u in request.id if u.user_id in self.people]
+        if isinstance(request, functions.messages.GetForumTopicsRequest):
+            return SimpleNamespace(topics=self.topics, messages=[])
+        if isinstance(request, functions.messages.GetCustomEmojiDocumentsRequest):
+            sticker = types.InputStickerSetEmpty()
+            return [
+                SimpleNamespace(id=i, attributes=[types.DocumentAttributeCustomEmoji(self.emoji[i], sticker)])
+                for i in request.document_id
+                if i in self.emoji
+            ]
         assert isinstance(request, functions.updates.GetChannelDifferenceRequest)
         self.asked.append(request.pts)
         return too_long(self.pts) if self.too_long else difference(self.pts, self.log)
@@ -384,13 +423,6 @@ def run(telegram, **kw):
 
 def day(id, n, text=None, **kw):
     return msg(id, text or f"m{id}", date=DATE + datetime.timedelta(days=n), **kw)
-
-
-@pytest.fixture
-def home(tmp_path, monkeypatch):
-    monkeypatch.setattr(fetch, "DATA", tmp_path)
-    monkeypatch.setenv("TG_OUT", str(tmp_path / "out"))
-    return tmp_path
 
 
 def state(home, key):
