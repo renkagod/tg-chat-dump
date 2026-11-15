@@ -18,7 +18,7 @@ from .accounts import resolve
 from .changes import Changes, apply_changes, channel_changes
 from .chatinfo import add_photo, chat_info, fetch_bios, fetch_topics, pinned_ids, refresh_users
 from .config import DATA
-from .export import export_db
+from .export import export_db, write_about
 from .scope import NO_SCOPE, Scope, has_link
 from .store import (
     BATCH_SIZE,
@@ -504,8 +504,6 @@ async def dump_chat(
             renamed = await refresh_users(plain, db, now)
             if renamed:
                 log.info(f"People saved by earlier runs asked about again: {renamed}")
-        if "bio" in options:
-            await fetch_bios(plain, db, now, stats)
         created = db.execute("SELECT date FROM messages WHERE id = 1 AND action LIKE '%Create'").fetchone()
         if created:  # a channel tells its members only when they joined; its first message tells the rest
             info.setdefault("created", created[0])
@@ -521,6 +519,14 @@ async def dump_chat(
     out = await asyncio.to_thread(
         export_db, db_path, entity.id, title, scope=scope, folder=folder, threads=threads, reader="html" in options
     )
+    if "bio" in options:
+        # after the export: it takes long, and the messages are all in place if it is stopped
+        db = open_db(db_path)
+        try:
+            await fetch_bios(plain, db, now, stats)
+        finally:
+            write_about(db, out)  # also when stopped: users.jsonl gets the bios read so far
+            db.close()
 
     if "comments" in options and isinstance(entity, Channel) and entity.broadcast:
         await dump_comments(clients, client, entity, out, workers, stats, options, scope, takeouts, again, recheck)

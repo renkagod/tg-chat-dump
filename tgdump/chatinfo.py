@@ -13,7 +13,7 @@ from .util import fmt_duration, iso
 
 log = logging.getLogger("dump")
 PER_REQUEST = 100  # users or custom emoji asked about in one request
-BIO_SECONDS = 0.6  # what one bio takes, to say how long the rest will
+BIO_SECONDS = 1.1  # what one bio takes with the waits Telegram asks for, to say how long the rest will
 
 
 def chat_kind(e):
@@ -189,6 +189,17 @@ async def pinned_ids(client, entity):
         return None
 
 
+def met(client, uid):
+    """The person as this account can ask about them, or None when it has never met them.
+
+    Only the session file is looked at: asking Telegram about a stranger costs a request that fails anyway.
+    """
+    try:
+        return utils.get_input_user(client.session.get_input_entity(types.PeerUser(uid)))
+    except (ValueError, TypeError):
+        return None
+
+
 async def refresh_users(clients, db, when):
     """Ask Telegram how the people saved by earlier runs look now: names and usernames change.
 
@@ -201,12 +212,7 @@ async def refresh_users(clients, db, when):
     left = [i for (i,) in db.execute(stale, (when,))]
     done = 0
     for client in clients:
-        known = []
-        for uid in left:
-            try:
-                known.append(utils.get_input_user(client.session.get_input_entity(types.PeerUser(uid))))
-            except (ValueError, TypeError):
-                continue
+        known = [user for user in (met(client, uid) for uid in left) if user]
         asked = set()
         patience, client.flood_sleep_threshold = client.flood_sleep_threshold, 0  # a "wait" ends the asking here
         try:
@@ -244,9 +250,12 @@ async def fetch_bios(clients, db, when, stats):
         while ids:
             uid, bio = ids.popleft(), None
             for client in order:  # the others may know someone this account has not met
+                user = met(client, uid)
+                if not user:
+                    continue
                 try:
-                    full = await client(functions.users.GetFullUserRequest(types.PeerUser(uid)))
-                except (ValueError, TypeError, errors.RPCError):
+                    full = await client(functions.users.GetFullUserRequest(user))
+                except errors.RPCError:
                     continue
                 bio = full.full_user.about or None
                 break

@@ -142,6 +142,7 @@ def test_bio_is_asked_once_per_person_and_only_with_the_extra(home):
     assert bios(home) == [(11, None, 0), (12, None, 0)]
     stats = run(tg, options=BIO)
     assert bios(home) == [(11, "Reads a lot", 1), (12, None, 1)] and stats["people"] == (2, 2)
+    assert '"bio": "Reads a lot"' in (home / OUT / "users.jsonl").read_text(encoding="utf-8")
     tg.bios[11] = "Writes a lot"
     run(tg, options=BIO)
     assert bios(home)[0] == (11, "Reads a lot", 1)  # not asked again
