@@ -19,7 +19,7 @@ from .changes import Changes, apply_changes, channel_changes
 from .chatinfo import add_photo, chat_info, fetch_bios, fetch_topics, pinned_ids, refresh_users
 from .config import DATA
 from .export import export_db
-from .scope import NO_SCOPE, Scope
+from .scope import NO_SCOPE, Scope, has_link
 from .store import (
     BATCH_SIZE,
     COLUMN_NAMES,
@@ -196,10 +196,20 @@ def full_dump_done(db_path):
     return False
 
 
+def has_details(db_path):
+    """Whether every saved message says what its media is; rows saved before 1.3.0 do not, until --refetch."""
+    db = open_db(db_path)
+    try:
+        return not outdated(db)
+    finally:
+        db.close()
+
+
 def copy_scope(whole_path, db_path, scope, sender_id=None):
     """Fill a filtered database from the whole-chat one, without the network. Returns the message count."""
     db = open_db(db_path)
     try:
+        db.create_function("has_link", 3, has_link, deterministic=True)
         where, params = scope.sql(sender_id)
         cols = ",".join(COLUMN_NAMES)
         db.execute("ATTACH DATABASE ? AS whole", (str(whole_path),))
@@ -330,7 +340,10 @@ async def dump_chat(
     title = utils.get_display_name(entity)
     forum = isinstance(entity, Channel) and bool(entity.forum)
     whole = DATA / f"{entity.id}.sqlite"
-    if scope and not scope.kind and not topics and folder is None and full_dump_done(whole):
+    # a filter is applied to the saved copy of the whole chat where there is one; a type only when that copy
+    # tells the types apart
+    local = scope and not topics and folder is None and full_dump_done(whole)
+    if local and (not scope.kind or has_details(whole)):
         try:
             sender = await client.get_peer_id(parse_chat(scope.from_user)) if scope.from_user else None
         except (ValueError, TypeError, errors.RPCError):

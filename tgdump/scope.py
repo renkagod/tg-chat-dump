@@ -2,6 +2,7 @@
 
 import datetime
 import hashlib
+import json
 import re
 from dataclasses import dataclass
 
@@ -24,6 +25,64 @@ KINDS = {
     "geo": types.InputMessagesFilterGeo,
     "contacts": types.InputMessagesFilterContacts,
 }
+
+
+# The same types as the saved copy tells them: `media` is the kind of media, extra.file.kind the kind of file
+# (a file without one is a plain document), extra.pinned the pin mark that every run brings up to date.
+FILE_KIND = "json_extract(extra, '$.file.kind')"
+SAVED_KINDS = {
+    "photos": "media = 'MessageMediaPhoto'",
+    "videos": f"{FILE_KIND} = 'video'",
+    "media": f"(media = 'MessageMediaPhoto' OR {FILE_KIND} = 'video')",
+    "docs": f"(json_extract(extra, '$.file.mime') IS NOT NULL AND {FILE_KIND} IS NULL)",
+    "links": "has_link(text, media, extra)",
+    "gifs": f"{FILE_KIND} = 'gif'",
+    "voice": f"{FILE_KIND} = 'voice'",
+    "music": f"{FILE_KIND} = 'audio'",
+    "round": f"{FILE_KIND} = 'round'",
+    "pinned": "json_extract(extra, '$.pinned')",
+    "geo": "media IN ('MessageMediaGeo', 'MessageMediaGeoLive', 'MessageMediaVenue')",
+    "contacts": "media = 'MessageMediaContact'",
+}
+# Telegram turns a bare name into a link when it ends in a real top-level domain: every country's, and the
+# generic ones people meet. So readme.md and main.py are links to it, and notes.txt is not.
+TLDS = (
+    "ac ad ae af ag ai al am ao aq ar as at au aw ax az ba bb bd be bf bg bh bi bj bm bn bo br bs bt bw by bz ca cc "
+    "cd cf cg ch ci ck cl cm cn co cr cu cv cw cx cy cz de dj dk dm do dz ec ee eg er es et eu fi fj fk fm fo fr ga "
+    "gd ge gf gg gh gi gl gm gn gp gq gr gs gt gu gw gy hk hm hn hr ht hu id ie il im in io iq ir is it je jm jo jp "
+    "ke kg kh ki km kn kp kr kw ky kz la lb lc li lk lr ls lt lu lv ly ma mc md me mg mh mk ml mm mn mo mp mq mr ms "
+    "mt mu mv mw mx my mz na nc ne nf ng ni nl no np nr nu nz om pa pe pf pg ph pk pl pm pn pr ps pt pw py qa re ro "
+    "rs ru rw sa sb sc sd se sg sh si sk sl sm sn so sr ss st su sv sx sy sz tc td tf tg th tj tk tl tm tn to tr tt "
+    "tv tw tz ua ug uk us uy uz va vc ve vg vi vn vu wf ws ye yt za zm zw "
+    "com org net edu gov mil int info biz name pro xyz top site online club shop store app dev tech cloud host link "
+    "live life world today news blog wiki space website fun icu vip work tools team money rip gay art design agency "
+    "digital email group media network systems solutions services software games game chat social video stream "
+    "zone one plus page run codes center company finance expert guru ninja rocks cool best win bet mobi asia tel "
+    "travel jobs cat aero coop museum cash pay bot bio sbs cfd lol wtf fyi moe pet pub bar cafe city land farm "
+    "academy school studio support help market trade exchange capital fund bank credit loan gold tips click "
+    "download press review reviews express global international center pics photo photos pictures audio movie "
+    "film show tube radio fm stream gg io "
+    "рф рус укр бел дети москва онлайн сайт орг ком"
+).split()
+# what the app shows as a link in plain text: an address with a scheme, a bare domain name, an IPv4 address,
+# an e-mail address
+LINK_RE = re.compile(
+    r"\b(?:https?|ftp|tg|ton|tonsite)://\S|\bwww\.\S"
+    rf"|(?<![\w@.-])(?:[^\W_][\w-]*\.)+(?:{'|'.join(sorted(set(TLDS)))})(?![\w-])"
+    r"|(?<![\w.])\d{1,3}(?:\.\d{1,3}){3}(?![\w.]*\.\d)"
+    r"|[\w.+-]+@[\w-]+\.[\w.-]*[^\W\d_]",
+    re.IGNORECASE,
+)
+
+
+def has_link(text, media, extra):
+    """Whether a saved message has a link: an address in its text, a link under a word, or a link preview."""
+    if media == "MessageMediaWebPage" or (text and LINK_RE.search(text)):
+        return True
+    if not extra or '"links"' not in extra:
+        return False
+    # mentions of people without a username are kept among the hidden links, but are not links
+    return any(not x["url"].startswith("tg://") for x in json.loads(extra).get("links", ()))
 
 
 RELATIVE_RE = re.compile(r"(\d+)\s*([dwm])")
@@ -94,8 +153,10 @@ class Scope:
         return kw
 
     def sql(self, sender_id=None):
-        """The dates and author as a WHERE clause over the messages table; `kind` has no local equivalent."""
+        """The filters as a WHERE clause over the messages table; `links` needs has_link as an SQL function."""
         where, params = ["1"], []
+        if self.kind:
+            where.append(SAVED_KINDS[self.kind])
         if self.since:
             where.append("date >= ?")
             params.append(self.day_start(self.since).isoformat())

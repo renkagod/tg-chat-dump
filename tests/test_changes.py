@@ -368,7 +368,7 @@ class Telegram:
     async def get_me(self):
         return User(id=1, first_name="Me")
 
-    async def get_messages(self, entity, limit=None, ids=None, reverse=False, offset_date=None):
+    async def get_messages(self, entity, limit=None, ids=None, reverse=False, offset_date=None, filter=None):
         if ids is not None:
             return [self.messages.get(i) for i in ids]
         found = sorted(self.messages.values(), key=lambda m: m.id, reverse=not reverse)
