@@ -15,6 +15,7 @@ from .export import export_db
 from .fetch import RECHECK_DAYS, Takeouts, dump_chat, saved_dumps
 from .files import DEFAULT_SIZE, DEFAULT_TYPES, TYPES, file_limits
 from .imports import import_result
+from .schedule import apply as set_schedule
 from .scope import KINDS, Scope, parse_date
 from .search import LIMIT, report
 from .util import parse_chat
@@ -26,7 +27,7 @@ def setup_logging(console=True):
     """Log to data/dump.log and, unless the interactive mode draws its own progress, to the console."""
     DATA.mkdir(parents=True, exist_ok=True)
     handlers = [logging.FileHandler(DATA / "dump.log", encoding="utf-8")]
-    if console:
+    if console and sys.stderr is not None:  # a scheduled run has no console at all
         handlers.append(logging.StreamHandler())
     logging.basicConfig(
         level=logging.INFO,
@@ -51,6 +52,14 @@ def parse_args():
     )
     p.add_argument("--chat", help="one more way to name a chat: id, @username or t.me link")
     p.add_argument("--update-all", action="store_true", help="fetch the new messages of every chat dumped before")
+    p.add_argument(
+        "--schedule",
+        nargs="?",
+        const="show",
+        metavar="WHEN",
+        help="have the system run --update-all on its own: 04:30 for every day at that time, hourly, or 6h for "
+        "every six hours; off removes the schedule, and without a value it is shown",
+    )
     p.add_argument(
         "--topics",
         help="only these forum topics, comma-separated ids (1 is General); with filters, the filtered messages "
@@ -126,7 +135,8 @@ def parse_args():
     a = p.parse_args()
     a.named = [*a.target, *([a.chat] if a.chat else [])]  # the chats named on the command line
     a.chats = a.named or [c for c in [s["TG_CHAT"]] if c]
-    if not a.chats and not a.login and not a.update_all and not a.import_path and a.search is None:
+    asked = a.login or a.update_all or a.import_path or a.search is not None or a.schedule is not None
+    if not a.chats and not asked:
         p.error("name a chat (tg-chat-dump @somegroup), pass --update-all, or set TG_CHAT in .env")
     if a.topics and len(a.chats) > 1:
         p.error("--topics names the topics of one chat")
@@ -183,6 +193,12 @@ async def main():
             raise SystemExit(f"Cannot read the export: {e}") from None
         if not found:
             raise SystemExit("The export has no chats with messages")
+        return
+    if a.schedule is not None:
+        try:
+            set_schedule(a.schedule)
+        except (ValueError, OSError) as e:
+            raise SystemExit(f"--schedule: {e}") from None
         return
     if a.search is not None:  # the saved dumps are read as they are
         try:

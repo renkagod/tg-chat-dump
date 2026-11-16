@@ -41,6 +41,7 @@ out/1234567890_My_Chat/
 - Other formats in and out: a CSV for spreadsheets, the JSON of Telegram Desktop's own export for the programs that read it, and an export made by Telegram Desktop read into a dump, which brings back messages deleted since (see [Other formats](#other-formats)).
 - Filters by date range, author or message type, such as links or documents.
 - Search across all your dumps at once, offline (see [Search](#search)).
+- A schedule kept by the system itself: `--schedule 04:30`, and every chat you dumped is brought up to date daily (see [On a schedule](#on-a-schedule)).
 - On `FLOOD_WAIT` the run sleeps and then continues on its own.
 - SOCKS5 and HTTP proxies, for networks where Telegram is blocked.
 - `index.html` to read the dump in a browser, offline; `messages.txt` for reading in an editor, `messages.jsonl` for scripts, and the SQLite database for queries.
@@ -89,7 +90,7 @@ Dump it with 2 accounts, extras: takeout, html? [Y/n, f = filters]
 - In the list a search gives, a number picks a chat; several (`1 3` or `2-4`) are dumped one after another with the saved extras.
 - If nothing in your chats matches the search, public groups and channels are searched too. Public chats can be dumped without joining.
 - Every account that can see the chat is used. A private chat or a small (non-super) group is the exception: each account has its own copy of it, so you see how many messages each one has and pick one. Enter takes the account that saved the chat before, or the biggest copy.
-- `/` opens the settings: add (`a`) or remove (`d N`) accounts, toggle the extras (`x`), set the output folder (`f`). They are saved. By default the output goes to `~/tg-chat-dump`, or `out/` in a source checkout.
+- `/` opens the settings: add (`a`) or remove (`d N`) accounts, toggle the extras (`x`), set the output folder (`f`), have the dumps updated on a schedule (`s`). They are saved. By default the output goes to `~/tg-chat-dump`, or `out/` in a source checkout.
 - Answering `f` instead of `Y` asks for filters for this one dump.
 - When a dump is done, `o` opens it in the browser (with the `html` extra) and `f` opens the folder.
 - **Ctrl+C** stops the dump; the next run resumes it.
@@ -222,7 +223,8 @@ With arguments it runs without questions, for scripts and cron. Settings come fr
 uv run dump.py @somegroup                            # whole chat (or only new messages on repeat runs)
 uv run dump.py https://t.me/somegroup                # the same; --chat @somegroup works too
 uv run dump.py @somegroup @somechannel -1001234567890   # several chats, one after another
-uv run dump.py --update-all                          # new messages of every chat dumped before, for cron
+uv run dump.py --update-all                          # new messages of every chat dumped before
+uv run dump.py --schedule 04:30                      # have the system run --update-all every day, see below
 uv run dump.py --chat @somegroup --topics 12,37      # only these forum topics; 1 is General
 uv run dump.py --chat @somegroup --with meta,markdown   # with extras
 uv run dump.py --chat @somegroup --with files --file-size 50   # with files up to 50 MB, see above
@@ -239,6 +241,19 @@ uv run dump.py --chat @somegroup --out "D:\Telegram dumps"   # output folder, re
 ```
 
 Several chats named in one run are dumped in a row with the same settings; the accounts log in and enter export mode once for all of them. A chat that cannot be dumped is reported and the others go on; the run then ends with exit code 1, as `--update-all` does.
+
+### On a schedule
+
+`--schedule` hands `--update-all` to the system's own scheduler, so the dumps keep up with their chats without a terminal open:
+
+```sh
+uv run dump.py --schedule 04:30    # every day at 04:30
+uv run dump.py --schedule 6h       # every six hours; hourly for every hour
+uv run dump.py --schedule          # show what is set
+uv run dump.py --schedule off      # remove it
+```
+
+On Windows it is a task in Task Scheduler, "tg-chat-dump update": it runs under your account while you are logged in, without a window, and a run missed because the computer was off starts when it is on again. On Linux and macOS it is a line in your crontab. The run is this very installation with its saved settings (the extras, the output folder), and it writes to `dump.log` in the data folder like any other run. In the interactive mode the schedule is `s` in the settings.
 
 ### More accounts, more speed
 
@@ -333,7 +348,7 @@ uv run pytest
 uv run ruff check . && uv run ruff format --check .
 ```
 
-The code is in `tgdump/`: `fetch` downloads, `store` turns messages into database rows (with `details` for what goes into `extra` and `rich` for rich messages), `chatinfo` reads the chat's own details, topics, pins and people, `files` downloads what is attached to the messages, `export` writes the folders, `reader` the offline page, `tdesktop` knows Telegram Desktop's export format and `imports` reads such an export into a dump, `search` looks through the saved dumps, `cli` and `interactive` are the two front ends.
+The code is in `tgdump/`: `fetch` downloads, `store` turns messages into database rows (with `details` for what goes into `extra` and `rich` for rich messages), `chatinfo` reads the chat's own details, topics, pins and people, `files` downloads what is attached to the messages, `export` writes the folders, `reader` the offline page, `tdesktop` knows Telegram Desktop's export format and `imports` reads such an export into a dump, `search` looks through the saved dumps, `schedule` sets the system's scheduler, `cli` and `interactive` are the two front ends.
 
 Issues and pull requests are welcome. Please run the tests and linters before opening a PR.
 

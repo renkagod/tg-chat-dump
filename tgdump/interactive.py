@@ -22,7 +22,7 @@ from prompt_toolkit.styles import Style
 from telethon import errors, functions, utils
 from telethon.tl.types import Channel, Chat, User
 
-from . import style
+from . import schedule, style
 from .accounts import login, make_client, new_session_name, open_accounts
 from .chatinfo import chat_kind
 from .config import DATA, OPTIONS, ensure_api_keys, load_settings, out_dir, save_options, save_settings, saved_options
@@ -212,6 +212,26 @@ def print_status(accounts):
     print(f"{paint('Extras:', 'dim')} {extras_text()}   {paint('Output:', 'dim')} {link(out_dir())}")
 
 
+def schedule_text():
+    """When the system updates the dumps on its own, as the settings show it."""
+    try:
+        when = schedule.current()
+    except OSError:  # no Task Scheduler or cron to ask
+        return "not available on this system"
+    return f"{when}, all the chats dumped before" if when else "off"
+
+
+async def change_schedule():
+    hint = "When to update all the dumped chats: 04:30 (every day at that time), hourly, 6h, or off; Enter keeps it > "
+    answer = (await ask(hint)).lower()
+    if not answer:
+        return
+    try:
+        schedule.apply(answer)
+    except (ValueError, OSError) as e:
+        print(paint(str(e), "yellow"))
+
+
 async def setup_menu(accounts):
     while True:
         print("\n" + paint("Settings", "bold") + paint(" (saved for next time)", "dim"))
@@ -222,7 +242,9 @@ async def setup_menu(accounts):
             print(paint("  (none yet)", "dim"))
         print(f"{paint('Output folder:', 'dim')} {out_dir()}")
         print(f"{paint('Extras:', 'dim')} {extras_text()}")
-        choice = await ask(keys("[a] add account  [d N] remove  [f] output folder  [x] extras  [Enter] back > "))
+        print(f"{paint('Updates on their own:', 'dim')} {schedule_text()}")
+        menu = "[a] add account  [d N] remove  [f] output folder  [x] extras  [s] schedule  [Enter] back > "
+        choice = await ask(keys(menu))
         if not choice:
             if accounts:
                 return
@@ -235,8 +257,10 @@ async def setup_menu(accounts):
             await change_out_dir()
         elif choice.lower() == "x":
             await options_menu()
+        elif choice.lower() == "s":
+            await change_schedule()
         else:
-            print(paint("Type a, d and a number, f, x, or press Enter.", "yellow"))
+            print(paint("Type a, d and a number, f, x, s, or press Enter.", "yellow"))
 
 
 async def first_account(accounts):
