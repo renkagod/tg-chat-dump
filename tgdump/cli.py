@@ -164,7 +164,10 @@ async def update_all(clients, workers, options, takeouts, again=False, recheck=R
     if not dumps:
         raise SystemExit("No chats dumped yet")
     known = {}  # the dialogs give every account the chats' access hashes
-    for found in await asyncio.gather(*(c.get_dialogs() for c in clients)):
+    for found in await asyncio.gather(*(c.get_dialogs() for c in clients), return_exceptions=True):
+        if isinstance(found, Exception):  # the other accounts go on; this one finds its chats one by one
+            log.warning(f"Cannot list the chats of an account: {found}")
+            continue
         for d in found:
             known.setdefault(d.entity.id, d.entity)
     failed = []
