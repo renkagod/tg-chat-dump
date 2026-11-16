@@ -48,6 +48,7 @@ from .util import all_or_none, fmt_duration, iso, parse_chat
 from .who import fetch_who
 
 log = logging.getLogger("dump")
+EXTRAS_SHOWN = ("people", "who", "files")  # the progress of the extras, as stats shows it
 RECHECK_DAYS = 2  # how far before the last run messages are downloaded again when Telegram's change log is no help
 
 
@@ -348,6 +349,8 @@ async def dump_chat(
     """
     stats = stats if stats is not None else {}
     stats.update(phase="connecting", total=0, stored=0, fetched=0, accounts=0, work_total=0, work_left=0)
+    for done in EXTRAS_SHOWN:  # what the extras of a chat dumped before have shown
+        stats.pop(done, None)
     stats.setdefault("label", "")
     scope = scope.within(topics)
     pairs = []
@@ -417,10 +420,8 @@ async def dump_chat(
                 export_db, db_path, entity.id, title, scope=scope, reader="html" in options, formats=options
             )
             out = await asyncio.to_thread(export, full=again)
-            if "who" in options:
-                await save_who(pairs, entity, db_path, now, stats, export)
-            if "files" in options:
-                await save_files(pairs, db_path, out, files, now, stats, export, workers=workers)
+            # the bios were asked for with the whole chat
+            await extras(pairs, entity, db_path, out, export, now, stats, options - {"bio"}, files, workers=workers)
             stats["phase"] = "done"
             return out
 
@@ -587,19 +588,9 @@ async def dump_chat(
         formats=options,
     )
     out = await asyncio.to_thread(export)
-    if "bio" in options:
-        # after the export: it takes long, and the messages are all in place if it is stopped
-        db = open_db(db_path)
-        try:
-            await fetch_bios(plain, db, now, stats)
-        finally:
-            write_about(db, out)  # also when stopped: users.jsonl gets the bios read so far
-            db.close()
     mine = list(zip(plain, (e for _, e in pairs), strict=True))  # the accounts themselves, not in export mode
-    if "who" in options and who:
-        await save_who(mine, entity, db_path, now, stats, export, topics)
-    if "files" in options:
-        await save_files(mine, db_path, out, files, now, stats, export, topics, threads, workers)
+    wanted = options if who else options - {"who"}
+    await extras(mine, entity, db_path, out, export, now, stats, wanted, files, topics, threads, workers)
 
     if "comments" in options and isinstance(entity, Channel) and entity.broadcast:
         await dump_comments(
@@ -609,32 +600,34 @@ async def dump_chat(
     return out
 
 
-async def save_who(pairs, entity, db_path, when, stats, export, topics=None):
-    """The "who" extra. It comes after the export, so the messages are all in place if it is stopped;
-    the export is then run once more, to show what was answered. What a stopped run was told is saved, and
-    shown by the next export."""
-    if isinstance(entity, Channel) and entity.broadcast:
-        log.info("A channel does not say who reacted to its posts")
-        return
+async def extras(
+    pairs, entity, db_path, out, export, when, stats, options, limits=None, topics=None, threads=False, workers=3
+):
+    """The extras that ask Telegram person by person or message by message: "bio", "who" and "files".
+
+    They come after the export, so the messages are all in place if they are stopped, and run together:
+    each asks for a thing of its own, and Telegram limits each kind of request apart. What a stopped run
+    was told is saved. The export is run once more when there are answers or files to show; the bios go
+    to users.jsonl only, also when the run is stopped.
+    """
+    jobs = {}
     db = open_db(db_path)
     try:
-        asked = await fetch_who(pairs, db, when, stats, topics)
+        if "bio" in options:
+            jobs["bio"] = fetch_bios([c for c, _ in pairs], db, when, stats)
+        if "who" in options and isinstance(entity, Channel) and entity.broadcast:
+            log.info("A channel does not say who reacted to its posts")
+        elif "who" in options:
+            jobs["who"] = fetch_who(pairs, db, when, stats, topics)
+        if "files" in options:
+            limits = limits or file_limits()
+            jobs["files"] = download_files(pairs, db, out, limits, when, stats, topics, threads, workers)
+        got = dict(zip(jobs, await all_or_none(jobs.values()), strict=True))
     finally:
+        if "bio" in jobs:
+            write_about(db, out)
         db.close()
-    if asked:
-        stats["phase"] = "exporting"
-        await asyncio.to_thread(export)
-
-
-async def save_files(pairs, db_path, out, limits, when, stats, export, topics=None, threads=False, workers=3):
-    """The "files" extra. It comes after the export, so the messages are all in place if it is stopped;
-    the export is then run once more, to add the paths of the new files."""
-    db = open_db(db_path)
-    try:
-        got = await download_files(pairs, db, out, limits or file_limits(), when, stats, topics, threads, workers)
-    finally:
-        db.close()
-    if got:
+    if got.get("who") or got.get("files"):
         stats["phase"] = "exporting"
         await asyncio.to_thread(export)
 

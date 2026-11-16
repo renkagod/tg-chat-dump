@@ -653,13 +653,16 @@ class ProgressLine:
                 "files": "looking for files to download…",
                 "done": "done",
             }.get(phase, phase)
-            if phase == "people" and s.get("people"):
-                text = "reading bios… {:,} of {:,}".format(*s["people"])
-            if phase == "who" and s.get("who"):
-                text = "asking who reacted… {:,} of {:,}".format(*s["who"])
-            if phase == "files" and s.get("files"):
-                done, total, weight = s["files"]
-                text = f"downloading files… {done:,} of {total:,}, {size_text(weight)}"
+            if phase in ("people", "who", "files"):  # the extras run together, each shows how far it is
+                busy = []
+                if s.get("people"):
+                    busy.append("reading bios… {:,} of {:,}".format(*s["people"]))
+                if s.get("who"):
+                    busy.append("asking who reacted… {:,} of {:,}".format(*s["who"]))
+                if s.get("files"):
+                    done, total, weight = s["files"]
+                    busy.append(f"downloading files… {done:,} of {total:,}, {size_text(weight)}")
+                text = " · ".join(busy) or text
             return f"{paint(spin, 'blue')} {label}{paint(text, 'dim')}"
 
         work_total, work_left = s.get("work_total", 0), s.get("work_left", 0)

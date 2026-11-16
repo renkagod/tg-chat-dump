@@ -114,6 +114,8 @@ Dump it with 2 accounts, extras: takeout, html? [Y/n, f = filters]
 | `csv` | `messages.csv` in every topic folder, a row per message, for a spreadsheet (see [Other formats](#other-formats)) | none |
 | `tdesktop` | `result.json` in the chat folder: the whole chat in the format of Telegram Desktop's own export, for the programs that read it (see [Other formats](#other-formats)) | the file is written whole on every run that found something new: about 3 seconds per hundred thousand messages |
 
+`bio`, `who` and `files` run at the same time: each asks Telegram for a thing of its own, which it limits apart, so together they take about as long as the slowest of them.
+
 Turning an extra on later does not touch messages that are already saved. A new run adds it to new messages only; `--refetch` adds it to the saved ones too, and asks for the bios again. `files` and `who` are the exceptions: they cover the saved messages from the start (`who` those whose reaction counts are saved). Polls and checklists are always saved now; the old `polls` extra is still accepted and does nothing.
 
 ## Filters

@@ -577,3 +577,26 @@ def test_a_chat_from_the_dialogs_is_not_asked_for_again(home):
     # an account whose dialogs do not have the chat looks it up once, without reading its dialogs again
     with pytest.raises(ValueError, match="None of the accounts"):
         asyncio.run(fetch.dump_chat([stranger], 7, seen={stranger: None}))
+
+
+def test_the_extras_run_together_and_the_chat_is_exported_once_more(home, monkeypatch):
+    started, exports = set(), []
+
+    def extra(name, found):
+        async def asked(*args):
+            started.add(name)
+            for _ in range(100):  # each waits for the others to have begun: one after another, none would end
+                if started == {"bio", "who", "files"}:
+                    return found
+                await asyncio.sleep(0)
+            raise AssertionError(f"{name} ran alone")
+
+        return asked
+
+    monkeypatch.setattr(fetch, "fetch_bios", extra("bio", 3))
+    monkeypatch.setattr(fetch, "fetch_who", extra("who", 0))
+    monkeypatch.setattr(fetch, "download_files", extra("files", 2))
+    real = fetch.export_db
+    monkeypatch.setattr(fetch, "export_db", lambda *a, **kw: exports.append(1) or real(*a, **kw))
+    run(Telegram([day(1, 0)]), options=frozenset({"bio", "who", "files"}))
+    assert len(exports) == 2  # the dump's own export, and one for the files the extras found
