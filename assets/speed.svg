@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="880" height="360" viewBox="0 0 880 360" role="img" aria-label="Over 100,000 messages per minute: about 115,000 with tg-chat-dump, about 29,000 with Telegram Desktop's export, about 6,000 through the regular API">
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="360" viewBox="0 0 880 360" role="img" aria-label="Over 100,000 messages per minute, in bursts up to about 200,000: about 115,000 with tg-chat-dump, about 29,000 with Telegram Desktop's export, about 6,000 through the regular API">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#0b1220"/>
@@ -17,11 +17,16 @@
     .value { font-size: 17px; font-weight: 700; fill: #0b1220; }
     .slow { font-size: 17px; font-weight: 700; fill: #8a97a8; }
     .note { font-size: 14px; fill: #6f8299; }
+    .burst-label { font-size: 15px; fill: #8fd8ff; }
+    .burst { font-size: 26px; font-weight: 800; fill: #ffffff; }
   </style>
   <rect width="880" height="360" rx="18" fill="url(#bg)"/>
   <text x="44" y="118" class="big">100,000+</text>
   <text x="490" y="84" class="unit">messages</text>
   <text x="490" y="118" class="unit">per minute</text>
+  <rect x="664" y="56" width="172" height="70" rx="14" fill="#2aabee" fill-opacity="0.14" stroke="#5fd3ff" stroke-opacity="0.55"/>
+  <text x="750" y="84" class="burst-label" text-anchor="middle">bursts up to</text>
+  <text x="750" y="112" class="burst" text-anchor="middle">~200,000</text>
 
   <text x="44" y="172" class="label">tg-chat-dump, 2 accounts, export mode</text>
   <rect x="44" y="182" width="792" height="22" rx="6" fill="url(#fast)"/>
