@@ -13,6 +13,7 @@ from .accounts import find_account, login, make_client, open_accounts, resolve
 from .config import DATA, OPTIONS, ensure_api_keys, load_settings, parse_options, save_settings
 from .export import export_db
 from .fetch import RECHECK_DAYS, Takeouts, dump_chat, saved_dumps
+from .files import DEFAULT_SIZE, DEFAULT_TYPES, TYPES, file_limits
 from .scope import KINDS, Scope, parse_date
 from .util import parse_chat
 
@@ -62,6 +63,18 @@ def parse_args():
     p.add_argument("--until", metavar="DATE", help="only messages up to this day, inclusive; a month means its end")
     p.add_argument("--from", dest="from_user", metavar="USER", help="only messages from this user (@username or id)")
     p.add_argument("--type", dest="kind", choices=KINDS, help="only messages of this type")
+    p.add_argument(
+        "--file-types",
+        metavar="TYPES",
+        help=f"what the files extra downloads, comma-separated: {', '.join(TYPES)}, or all "
+        f"(default {s['TG_FILE_TYPES'] or DEFAULT_TYPES})",
+    )
+    p.add_argument(
+        "--file-size",
+        metavar="MB",
+        help="the largest file the files extra downloads, in megabytes; 0 for no limit "
+        f"(default {s['TG_FILE_SIZE'] or DEFAULT_SIZE})",
+    )
     p.add_argument("--out", metavar="DIR", help="output folder; it is saved to .env and used from now on")
     p.add_argument("--export-only", action="store_true", help="rebuild the output folders from the database")
     p.add_argument(
@@ -85,13 +98,14 @@ def parse_args():
         p.error("name a chat (tg-chat-dump @somegroup), pass --update-all, or set TG_CHAT in .env")
     try:
         a.options = parse_options(a.options)
+        a.files = file_limits(a.file_types, a.file_size)
         a.scope = Scope(parse_date(a.since), parse_date(a.until, end=True), a.from_user, a.kind)
     except ValueError as e:
         p.error(str(e))
     return a
 
 
-async def update_all(clients, workers, options, takeouts, again=False, recheck=RECHECK_DAYS):
+async def update_all(clients, workers, options, takeouts, again=False, recheck=RECHECK_DAYS, files=None):
     """Fetch the new messages of every whole-chat dump in data/; a chat that fails does not stop the others."""
     dumps = saved_dumps()
     if not dumps:
@@ -106,7 +120,14 @@ async def update_all(clients, workers, options, takeouts, again=False, recheck=R
         target = utils.get_peer(entity) if entity else chat_id
         try:
             await dump_chat(
-                clients, target, workers=workers, options=options, takeouts=takeouts, again=again, recheck=recheck
+                clients,
+                target,
+                workers=workers,
+                options=options,
+                takeouts=takeouts,
+                again=again,
+                recheck=recheck,
+                files=files,
             )
         except (ValueError, errors.RPCError) as e:
             log.warning(f"Cannot update {chat_id}: {e}")
@@ -144,7 +165,7 @@ async def main():
                 raise SystemExit(f"--account: {e}") from None
         if a.update_all:
             async with Takeouts() as takeouts:
-                await update_all(using, a.workers, a.options, takeouts, a.refetch, a.recheck)
+                await update_all(using, a.workers, a.options, takeouts, a.refetch, a.recheck, a.files)
             return
         chat = parse_chat(a.chat)
         if a.export_only:
@@ -165,6 +186,7 @@ async def main():
                 takeouts=takeouts,
                 again=a.refetch,
                 recheck=a.recheck,
+                files=a.files,
             )
     finally:
         for c in clients:

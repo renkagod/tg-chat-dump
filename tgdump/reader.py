@@ -7,7 +7,8 @@ import os
 import re
 from pathlib import Path
 
-from .store import get_chat
+from .store import get_chat, saved_files
+from .util import topic_folder
 
 DATA_DIR = ".reader"
 PART_ROWS = 10_000  # rows per data file, counted from the start of a list, so appending keeps earlier parts as is
@@ -105,8 +106,11 @@ class _Part:
         os.replace(self.tmp, self.path)
 
 
-def _write_list(db, data, key, topic, threads, first=0):
-    """Stream one list into its parts, starting with part `first` (earlier parts are kept)."""
+def _write_list(db, data, key, topic, threads, first=0, files=None):
+    """Stream one list into its parts, starting with part `first` (earlier parts are kept).
+
+    files: {message id: its downloaded file}, shown in the message.
+    """
     if threads:
         sql, params = _SELECT + " ORDER BY COALESCE(reply_top, reply_to, id), id", ()
     elif first:
@@ -144,6 +148,9 @@ def _write_list(db, data, key, topic, threads, first=0):
                     head = [1, post] if post else [0, thread]
             if ex:
                 ex = {k: v for k, v in ex.items() if k not in _UNSHOWN and not (md and k == "links")} or None
+            if files and mid in files:
+                ex = ex or {}
+                ex["file"] = {**files[mid], **ex.get("file", {})}
             if deleted or mid in edits:
                 ex = ex or {}
                 if deleted:
@@ -200,7 +207,7 @@ def write_reader(db, out, chat_title, titles, topics=None, threads=False, since=
         groups = db.execute("SELECT topic_id, COUNT(*), MAX(id) FROM messages GROUP BY topic_id").fetchall()
     groups = [g for g in groups if g[1]]
     forum = not threads and any(t is not None for t, *_ in groups)
-    about = topic_meta(db) if forum else {}
+    about, files = topic_meta(db) if forum else {}, saved_files(db)
     entries, keep = [], set()
     for t, count, newest in groups:
         key = "all" if t is None else str(t)
@@ -217,7 +224,7 @@ def write_reader(db, out, chat_title, titles, topics=None, threads=False, since=
         if threads and first < parts:
             first = 0  # ordered by thread, not id: a new message can land in any part
         if first < parts:
-            _write_list(db, data, key, t, threads, first)
+            _write_list(db, data, key, t, threads, first, files)
         if not forum:
             title = chat_title
         elif t is None:
@@ -226,7 +233,9 @@ def write_reader(db, out, chat_title, titles, topics=None, threads=False, since=
             title = titles.get(t) or ("General" if t == 1 else f"Topic {t}")
         last = db.execute("SELECT CAST(strftime('%s', date) AS INTEGER) FROM messages WHERE id = ?", (newest,))
         stamps = [p.stat().st_mtime_ns // 1_000_000 for p in paths]
-        entries.append([key, t, title, count, last.fetchone()[0] or 0, stamps, about.get(t) or None])
+        # the folder the topic is exported to: the files of its messages are in it
+        folder = "" if t is None or threads else topic_folder(out, t, titles).name
+        entries.append([key, t, title, count, last.fetchone()[0] or 0, stamps, about.get(t) or None, folder])
         keep.update(p.name for p in paths)
     for f in data.iterdir():
         if f.name not in keep:
@@ -245,7 +254,8 @@ _HTML = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' file:; \
-style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
+style-src 'unsafe-inline'; img-src data: 'self' file:; media-src 'self' file:; base-uri 'none'; \
+form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <meta name="referrer" content="no-referrer">
 <link rel="icon" href="data:,">
@@ -528,6 +538,15 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1
   background: var(--sep); }
 .rank { font-size: 12px; color: var(--text3); overflow-wrap: anywhere; }
 a.chip { text-decoration: none; }
+.shot { display: block; width: fit-content; max-width: min(100%, 440px); margin: 5px 0 3px; border-radius: 10px;
+  overflow: hidden; background: var(--fill); }
+.shot img, video.shot { display: block; max-width: 100%; height: auto; max-height: 460px; }
+video.shot { width: min(100%, 440px); }
+.shot.stk { background: none; border-radius: 0; }
+.shot.rnd { border-radius: 50%; object-fit: cover; }
+.shot.veil { cursor: pointer; }
+a.shot.veil img, video.shot.veil { filter: blur(28px) saturate(1.4); }
+.aud { display: block; width: min(100%, 360px); height: 38px; margin: 4px 0 3px; }
 .cd { color: var(--text3); font-weight: 400; overflow-wrap: anywhere; }
 .wp { display: block; max-width: 520px; margin: 4px 0 2px; padding: 4px 10px 5px 9px; color: inherit;
   border-left: 3px solid var(--accent); border-radius: 4px 8px 8px 4px; background: var(--fill2);
@@ -692,8 +711,8 @@ const BATCH = 40, KEEP = 150, MAXROWS = 380;
 const ID = 0, DATE = 1, SND = 2, TEXT = 3, REPLY = 4, FWD = 5, MEDIA = 6, ACT = 7, GRP = 8, EDIT = 9,
   REACT = 10, VIEWS = 11, REPLIES = 12, EXTRA = 13, HEAD = 14;
 const reduced = matchMedia("(prefers-reduced-motion: reduce)");
-const TOPICS = META.topics.map(([k, id, title, count, last, v, info]) =>
-  ({ k, id, title, count, last, v, info: info || {} }));
+const TOPICS = META.topics.map(([k, id, title, count, last, v, info, dir]) =>
+  ({ k, id, title, count, last, v, info: info || {}, dir: dir || "" }));
 const CHAT = META.chat || {};
 const pinbtn = $("pinbtn"), pins = $("pins"), about = $("about");
 const byKey = new Map(TOPICS.map((t) => [t.k, t]));
@@ -834,6 +853,67 @@ function mediaInfo(ex) {
   if (ex.photo) return fieldsText(ex.photo);
   if (ex.media_info) return fieldsText(ex.media_info);
   return "";
+}
+
+function fileUrl(path) {  // a downloaded file, from the folder of the topic that is open
+  const dir = (byKey.get(S.k) || {}).dir || "";
+  return [...dir.split("/"), ...path.split("/")].filter(Boolean).map(encodeURIComponent).join("/");
+}
+const IMAGE_RE = /\.(jpe?g|png|webp|gif|bmp|avif)$/i, VIDEO_RE = /\.(mp4|webm|mov|m4v)$/i;
+const AUDIO_RE = /\.(mp3|ogg|oga|opus|m4a|wav|flac|aac)$/i;
+const PAGE_RE = /\.(x?html?|shtml|svgz?|xml|xslt?|mht|mhtml)$/i;  // files a browser runs scripts from
+function fitted(e, f, max) {  // the size is set before the file loads, so the rows around it do not jump
+  if (!f.w || !f.h) return;
+  const k = Math.min(1, max / f.w, max / f.h);
+  e.style.width = Math.round(f.w * k) + "px";
+  e.style.aspectRatio = `${f.w} / ${f.h}`;
+}
+function attachment(f, media, hidden) {  // [what shows the file, whether it stands in for the chip]
+  const url = fileUrl(f.path), kind = f.kind;
+  const veil = (e) => {
+    if (!hidden) return e;
+    e.classList.add("veil");
+    e.title = "Hidden by the sender, click to show";
+    e.addEventListener("click", (ev) => {
+      if (!e.classList.contains("veil")) return;
+      ev.preventDefault();
+      e.classList.remove("veil");
+      e.removeAttribute("title");
+    });
+    return e;
+  };
+  if (media === "Photo" || (IMAGE_RE.test(f.path) && kind !== "video" && kind !== "gif")) {
+    const a = h("a", "shot" + (kind === "sticker" ? " stk" : "")), img = h("img");
+    a.href = url;
+    a.target = "_blank";
+    img.src = url;
+    img.loading = "lazy";
+    img.decoding = "async";
+    img.alt = kind === "sticker" ? f.emoji || "Sticker" : f.name || "Photo";
+    fitted(img, f, kind === "sticker" ? 160 : 440);
+    a.append(img);
+    return [veil(a), true];
+  }
+  if (kind === "video" || kind === "gif" || kind === "round" || kind === "sticker" || VIDEO_RE.test(f.path)) {
+    if (!VIDEO_RE.test(f.path)) return [null, false];  // an animated sticker in Telegram's own format
+    const v = h("video", "shot" + (kind === "round" ? " rnd" : kind === "sticker" ? " stk" : ""));
+    v.src = url;
+    v.preload = "metadata";
+    v.playsInline = true;
+    if (kind === "gif" || kind === "sticker") { v.loop = true; v.muted = true; }
+    if (kind === "sticker") v.autoplay = true;
+    else v.controls = true;
+    fitted(v, f, kind === "sticker" ? 160 : kind === "round" ? 240 : 440);
+    return [veil(v), true];
+  }
+  if (kind === "voice" || kind === "audio" || AUDIO_RE.test(f.path)) {
+    const a = h("audio", "aud");
+    a.src = url;
+    a.preload = "none";
+    a.controls = true;
+    return [a, false];
+  }
+  return [null, false];
 }
 
 function hash32(s) {
@@ -1114,16 +1194,25 @@ function renderRow(i) {
   }
   if (r[REPLY]) body.append(quote(d, r[REPLY], null, ex.reply));
   else if (ex.reply && ex.reply.story) body.append(h("div", "chip", "Reply to a story"));
+  const file = ex.file && ex.file.path ? ex.file : null;
   const chip = () => {
     const [label, ic] = mediaLabel(media), g = ex.geo || ex.venue;
-    const c = out("div", "chip", g ? osm(g) : null), info = mediaInfo(ex);
+    // a page sent to the chat is not opened from here: next to the dump, it could read it
+    const open = file && !PAGE_RE.test(file.path);
+    const c = out("div", "chip", g ? osm(g) : open ? fileUrl(file.path) : null), info = mediaInfo(ex);
+    if (file && !open) c.title = `Saved as ${file.path} in the topic's folder`;
     c.append(icon(ic), label);
     if (info) c.append(h("span", "cd", info));
     return c;
   };
   if (ex.poll) body.append(pollCard(ex.poll));
   else if (ex.todo) body.append(todoCard(ex.todo));
-  else if (media && media !== "WebPage") body.append(chip());
+  else if (media && media !== "WebPage") {
+    const [shown, alone] = file
+      ? attachment(file, media, file.spoiler || (ex.photo && ex.photo.spoiler)) : [null, false];
+    if (!alone) body.append(chip());
+    if (shown) body.append(shown);
+  }
   if (r[TEXT]) {
     const t = h("div", "text");
     rich(t, r[TEXT]);

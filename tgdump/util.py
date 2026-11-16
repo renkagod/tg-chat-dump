@@ -9,6 +9,11 @@ def slug(s):
     return re.sub(r"[^\w\-]+", "_", s).strip("_")[:60]
 
 
+def topic_folder(out, topic, titles):
+    """A forum topic's folder; its name follows the topic title."""
+    return out / f"{topic}_{slug(titles.get(topic) or ('General' if topic == 1 else ''))}".rstrip("_")
+
+
 def plain(text):
     """Poll and checklist texts are TextWithEntities in newer layers, plain strings in older ones."""
     return getattr(text, "text", text)
@@ -18,6 +23,13 @@ def parse_chat(s):
     """A chat or user reference: numeric id, @username or t.me link."""
     s = str(s).strip()
     return int(s) if s.lstrip("-").isdigit() else s
+
+
+def size_text(n):
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
 
 
 def fmt_duration(seconds):

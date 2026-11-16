@@ -84,6 +84,10 @@ CREATE TABLE IF NOT EXISTS users(
   updated TEXT);
 -- the chat itself, a fact per row: description, member count, links, what members cannot do... (chatinfo.py)
 CREATE TABLE IF NOT EXISTS chat(key TEXT PRIMARY KEY, value);
+-- what the "files" extra downloaded: `path` is inside the folder of the message's topic, w and h the size of
+-- a picture. Without a path the file was not downloaded: larger than the limit when `size` is there, gone from
+-- Telegram when it is not.
+CREATE TABLE IF NOT EXISTS files(id INTEGER PRIMARY KEY, path TEXT, size INTEGER, w INTEGER, h INTEGER, at TEXT);
 -- the triggers check for an existing row themselves: inside an upsert, OR IGNORE of a trigger's statement is not used
 CREATE TRIGGER IF NOT EXISTS keep_edit AFTER UPDATE OF text, edit_date ON messages
 WHEN new.edit_date IS NOT NULL AND new.edit_date IS NOT old.edit_date AND new.text IS NOT old.text
@@ -400,6 +404,15 @@ def recheck_topics(db, topics, first_id):
     db.commit()
 
 
+def saved_files(db):
+    """{message id: {path, size, w, h}} of the downloaded files; a path is inside the topic's folder."""
+    names = ("path", "size", "w", "h")
+    found = {}
+    for mid, *row in db.execute("SELECT id, path, size, w, h FROM files WHERE path IS NOT NULL"):
+        found[mid] = {k: v for k, v in zip(names, row, strict=True) if v is not None}
+    return found
+
+
 def outdated(db):
     """Whether messages were saved by a version before 1.3.0, which kept less of them; --refetch fills that in."""
     return bool(get_state(db, "lacks_details"))
@@ -418,6 +431,7 @@ def refetch(db, topics=None):
         db.execute("UPDATE tasks SET cursor=hi + 1, done=0 WHERE topic IS NULL")
         set_state(db, "lacks_details", None)
         db.execute("UPDATE users SET bio_at=NULL")  # with the "bio" extra, bios are asked for again too
+        db.execute("DELETE FROM files WHERE path IS NULL")  # and the files that could not be downloaded
     db.execute("UPDATE exports SET max_id=-1")  # written again; the rows stay, they list the chats dumped before
     db.commit()
 
@@ -426,7 +440,7 @@ def clear(db):
     """Forget everything downloaded, so the chat is fetched again from scratch."""
     db.executescript(
         "DELETE FROM messages; DELETE FROM tasks; DELETE FROM topics; DELETE FROM edits; DELETE FROM changed;"
-        "DELETE FROM state; DELETE FROM users; DELETE FROM chat; UPDATE exports SET max_id=-1;"
+        "DELETE FROM state; DELETE FROM users; DELETE FROM chat; DELETE FROM files; UPDATE exports SET max_id=-1;"
     )
 
 

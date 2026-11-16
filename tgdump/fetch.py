@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import datetime
+import functools
 import logging
 import sqlite3
 import time
@@ -19,6 +20,7 @@ from .changes import Changes, apply_changes, channel_changes
 from .chatinfo import add_photo, chat_info, fetch_bios, fetch_topics, pinned_ids, refresh_users
 from .config import DATA
 from .export import export_db, write_about
+from .files import download_files, file_limits
 from .scope import NO_SCOPE, Scope, has_link
 from .store import (
     BATCH_SIZE,
@@ -213,8 +215,15 @@ def copy_scope(whole_path, db_path, scope, sender_id=None):
         where, params = scope.sql(sender_id)
         cols = ",".join(COLUMN_NAMES)
         db.execute("ATTACH DATABASE ? AS whole", (str(whole_path),))
-        db.execute("DELETE FROM messages")
-        db.execute(f"INSERT INTO messages({cols}) SELECT {cols} FROM whole.messages WHERE {where}", params)
+        # the rows that are here already are updated in place, so the ones that changed are noted for the
+        # export; a downloaded file is one of them, and its message is still here to carry it
+        db.execute(f"DELETE FROM messages WHERE id NOT IN (SELECT id FROM whole.messages WHERE {where})", params)
+        sets = ", ".join(f"{c}=excluded.{c}" for c in COLUMN_NAMES[1:])
+        db.execute(
+            f"INSERT INTO messages({cols}) SELECT {cols} FROM whole.messages WHERE {where} "
+            f"ON CONFLICT(id) DO UPDATE SET {sets}",
+            params,
+        )
         for table in ("topics", "chat"):
             db.execute(f"DELETE FROM {table}")
             db.execute(f"INSERT INTO {table} SELECT * FROM whole.{table}")
@@ -222,7 +231,6 @@ def copy_scope(whole_path, db_path, scope, sender_id=None):
         db.execute("INSERT INTO users SELECT * FROM whole.users WHERE id IN (SELECT sender_id FROM messages)")
         db.execute("DELETE FROM edits")
         db.execute("INSERT INTO edits SELECT * FROM whole.edits WHERE id IN (SELECT id FROM messages)")
-        db.execute("DELETE FROM changed")  # the export that follows is written whole
         db.commit()
         db.execute("DETACH DATABASE whole")
         return db.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
@@ -300,6 +308,7 @@ async def dump_chat(
     takeouts=None,
     again=False,
     recheck=RECHECK_DAYS,
+    files=None,
 ):
     """Download a chat with every client that can see it, then export it.
 
@@ -308,6 +317,7 @@ async def dump_chat(
     the chat has one that reaches back far enough, otherwise by downloading again what was written from
     `recheck` days before the last run on. recheck=0 leaves the saved messages alone.
 
+    `files` (a files.Limits) says which files the "files" extra downloads; without it the saved settings do.
     `takeouts` (a Takeouts) keeps export mode open for later dumps; without it, it is closed when this one ends.
     `stats` (a dict) is updated in place for progress display: phase, label, total
     (approximate message count from Telegram), stored, fetched, accounts, and
@@ -340,6 +350,7 @@ async def dump_chat(
     title = utils.get_display_name(entity)
     forum = isinstance(entity, Channel) and bool(entity.forum)
     whole = DATA / f"{entity.id}.sqlite"
+    now = iso(datetime.datetime.now(datetime.UTC).replace(microsecond=0))
     # a filter is applied to the saved copy of the whole chat where there is one; a type only when that copy
     # tells the types apart
     local = scope and not topics and folder is None and full_dump_done(whole)
@@ -355,7 +366,8 @@ async def dump_chat(
                 chat,
                 workers=workers,
                 stats=stats,
-                options=options - {"comments"},
+                # the files are wanted for the filtered messages only, and are downloaded below
+                options=options - {"comments", "files"},
                 takeouts=takeouts,
                 again=again,
                 recheck=recheck,
@@ -364,9 +376,10 @@ async def dump_chat(
             found = await asyncio.to_thread(copy_scope, whole, db_path, scope, sender)
             log.info(f"Filters: {scope.tag()}, {found} messages taken from the saved dump of the whole chat")
             stats.update(stored=found, fetched=0, local=True)
-            out = await asyncio.to_thread(
-                export_db, db_path, entity.id, title, scope=scope, reader="html" in options, full=again
-            )
+            export = functools.partial(export_db, db_path, entity.id, title, scope=scope, reader="html" in options)
+            out = await asyncio.to_thread(export, full=again)
+            if "files" in options:
+                await save_files(pairs, db_path, out, files, now, stats, export, workers=workers)
             stats["phase"] = "done"
             return out
 
@@ -395,7 +408,6 @@ async def dump_chat(
             await fetch_topics(client, entity, db)
 
         # edits and deletions since the last run; a filtered dump has its own database and is left as it is
-        now = iso(datetime.datetime.now(datetime.UTC).replace(microsecond=0))
         check = recheck > 0 and not scope
         newest = db.execute("SELECT date, id FROM messages ORDER BY id DESC LIMIT 1").fetchone()
         last = get_state(db, "checked") or (newest and newest[0])
@@ -516,9 +528,10 @@ async def dump_chat(
             log.info(f"Edited since the last run: {edits - had_edits}, gone from Telegram: {job.marked}")
 
     stats["phase"] = "exporting"
-    out = await asyncio.to_thread(
+    export = functools.partial(
         export_db, db_path, entity.id, title, scope=scope, folder=folder, threads=threads, reader="html" in options
     )
+    out = await asyncio.to_thread(export)
     if "bio" in options:
         # after the export: it takes long, and the messages are all in place if it is stopped
         db = open_db(db_path)
@@ -527,15 +540,44 @@ async def dump_chat(
         finally:
             write_about(db, out)  # also when stopped: users.jsonl gets the bios read so far
             db.close()
+    if "files" in options:
+        mine = list(zip(plain, (e for _, e in pairs), strict=True))  # files are not served in export mode
+        await save_files(mine, db_path, out, files, now, stats, export, topics, threads, workers)
 
     if "comments" in options and isinstance(entity, Channel) and entity.broadcast:
-        await dump_comments(clients, client, entity, out, workers, stats, options, scope, takeouts, again, recheck)
+        await dump_comments(
+            clients, client, entity, out, workers, stats, options, scope, takeouts, again, recheck, files
+        )
     stats["phase"] = "done"
     return out
 
 
+async def save_files(pairs, db_path, out, limits, when, stats, export, topics=None, threads=False, workers=3):
+    """The "files" extra. It comes after the export, so the messages are all in place if it is stopped;
+    the export is then run once more, to add the paths of the new files."""
+    db = open_db(db_path)
+    try:
+        got = await download_files(pairs, db, out, limits or file_limits(), when, stats, topics, threads, workers)
+    finally:
+        db.close()
+    if got:
+        stats["phase"] = "exporting"
+        await asyncio.to_thread(export)
+
+
 async def dump_comments(
-    clients, client, channel, out, workers, stats, options, scope, takeouts, again=False, recheck=RECHECK_DAYS
+    clients,
+    client,
+    channel,
+    out,
+    workers,
+    stats,
+    options,
+    scope,
+    takeouts,
+    again=False,
+    recheck=RECHECK_DAYS,
+    files=None,
 ):
     """Comments under channel posts live in the linked discussion group; dump it into <channel>/comments."""
     full = await client(functions.channels.GetFullChannelRequest(channel))
@@ -557,6 +599,7 @@ async def dump_comments(
             takeouts=takeouts,
             again=again,
             recheck=recheck,
+            files=files,
         )
     except (ValueError, errors.RPCError) as e:
         log.warning(f"Cannot dump the comments: {e}")

@@ -36,7 +36,8 @@ out/1234567890_My_Chat/
 - A repeat run also finds the messages edited or deleted since the last one. An edited message keeps its earlier text next to the new one, a deleted message stays in the dump and is marked as deleted (see [Edits and deletions](#edits-and-deletions)).
 - Everything the Telegram app shows with a message, not only its text: rich messages laid out in blocks, file names and sizes, link previews, polls and checklists, places and contacts, buttons with their links, quotes in replies, replies to other chats, forward sources, author signatures and admin titles, fact checks, service actions with their details.
 - The chat around the messages too: its description, picture, member count and settings, the icons and states of forum topics, pinned messages, and everyone who wrote, under their current name and username (see [The chat and its people](#the-chat-and-its-people)).
-- Optional extras, each a toggle: reactions and views, formatting with hidden links, comments under channel posts, people's bios, and Telegram's export mode (see [Extras](#extras)).
+- The files too, when asked: photos, videos, voice messages and documents, within limits on size and type, and shown in place by the reader (see [Files](#files)).
+- Optional extras, each a toggle: reactions and views, formatting with hidden links, comments under channel posts, people's bios, files, and Telegram's export mode (see [Extras](#extras)).
 - Filters by date range, author or message type, such as links or documents.
 - On `FLOOD_WAIT` the run sleeps and then continues on its own.
 - SOCKS5 and HTTP proxies, for networks where Telegram is blocked.
@@ -101,10 +102,11 @@ Dump it with 2 accounts, extras: takeout, html? [Y/n, f = filters]
 | `markdown` | `text_md`: the text as Markdown, with bold, links behind words, mentions | none |
 | `comments` | for a channel: the comments under its posts, from the linked discussion group, in `comments/`, grouped by post | a second dump of the discussion group |
 | `bio` | the bio of everyone who wrote in the chat, in `users.jsonl` and the `users` table | one request per person, and Telegram lets through about 50 a minute per account: 5,000 authors take an hour and a half with one account, under an hour with two. It runs after the messages are saved and exported, each person is asked about once, and a stopped run goes on with the rest next time |
+| `files` | the photos, videos, voice messages, music and documents attached to the messages, in `files/` inside each topic folder, with the path in `extra.file.path` (see [Files](#files)) | the download itself: it takes what your connection needs for the files within the limits, and their size on disk |
 | `takeout` | runs the dump in Telegram's data-export mode, the one Telegram Desktop uses; it skips the usual rate limits, about 10× faster (see [Performance](#performance)) | the first time, Telegram asks you to allow the export in the app (the interactive mode waits for it), otherwise it opens after 24 hours; until then the dump runs at normal speed |
 | `html` | `index.html` in the chat folder: read the dump in a browser, offline, with topics, search, replies and jumps to a date | a few seconds on the first run for a chat of several hundred thousand messages, then a fraction of a second |
 
-Turning an extra on later does not touch messages that are already saved. A new run adds it to new messages only; `--refetch` adds it to the saved ones too, and asks for the bios again. Polls and checklists are always saved now; the old `polls` extra is still accepted and does nothing.
+Turning an extra on later does not touch messages that are already saved. A new run adds it to new messages only; `--refetch` adds it to the saved ones too, and asks for the bios again. `files` is the exception: it covers the saved messages from the start. Polls and checklists are always saved now; the old `polls` extra is still accepted and does nothing.
 
 ## Filters
 
@@ -139,6 +141,23 @@ Every run also saves what the app shows around the messages, and brings it up to
 - **Pinned messages**: the marks follow the chat's own list, so a message unpinned a year after it was saved loses its mark. The reader lists a topic's pinned messages behind the pin button. Telegram lists pins only as far back as the account sees the chat; marks on older messages stay as they were.
 - **People**: everyone who wrote, with name, username, and whether it is a bot or a deleted account, in `users.jsonl` and the `users` table. A message keeps the name it was sent under; the table has the current one. People who wrote since the last run are updated as their messages arrive. The others are asked about again, those not asked about for the longest first, as many as Telegram answers without a wait: about 400 per account in one run, so a chat with thousands of authors goes round in several runs. The `bio` [extra](#extras) adds their bios.
 
+## Files
+
+With the `files` extra a run also downloads what is attached to the messages: photos, videos, GIFs, voice and round video messages, music and documents. A file lands in the `files` folder inside the folder of its topic (inside the chat folder when the chat has no topics), named by the message id and the file's own name: `1045_notes.pdf`, `1043.jpg`. The message says where its file is in `extra.file.path`, and the reader shows it in place: photos, videos and GIFs in the message, voice messages and music with a player, any other file as a link.
+
+Two settings say what is downloaded:
+
+- `--file-size 50`, or `TG_FILE_SIZE` in `.env`: the largest file, in megabytes. The default is 20, and `0` takes files of any size.
+- `--file-types photos,voice,docs`, or `TG_FILE_TYPES`: any of `photos`, `videos`, `gifs`, `voice`, `round`, `music`, `docs`, `stickers`, or `all`. The default is everything but stickers, which are the same few files sent over and over.
+
+In the interactive mode both are under `x`, then `f`.
+
+Files come after the messages are saved and exported, the newest first, and each one is noted as it lands. A run stopped halfway loses nothing, and the next one goes on with what is missing. A file is downloaded once; delete it from the folder and the next run brings it back, raise a limit and the next run downloads what it now allows. The extra looks at every saved message, not only the new ones, so it can be turned on for a chat dumped long ago. Only a message that is still in Telegram has a file to download.
+
+Filters narrow it down: `--type photos --with files` downloads the photos of a chat into the filtered folder and nothing else, and `--topics 12 --with files` the files of one topic. With several accounts each takes its share. Unlike messages, files take as long as your connection needs: a chat with tens of thousands of photos is several gigabytes.
+
+A web page sent to the chat (`.html`, `.svg`) is saved like any other file, but the reader does not link to it: opened from the folder of the dump, a page could read the dump.
+
 ## Command line
 
 With arguments it runs without questions, for scripts and cron. Settings come from `.env` (see `.env.example`). The examples use the source checkout; with the installed package, replace `uv run dump.py` with `tg-chat-dump`:
@@ -149,6 +168,7 @@ uv run dump.py https://t.me/somegroup                # the same; --chat @somegro
 uv run dump.py --update-all                          # new messages of every chat dumped before, for cron
 uv run dump.py --chat @somegroup --topics 12,37      # only these forum topics
 uv run dump.py --chat @somegroup --with meta,markdown   # with extras
+uv run dump.py --chat @somegroup --with files --file-size 50   # with files up to 50 MB, see above
 uv run dump.py --chat @somegroup --export-only       # rebuild the folders from the database, no network
 uv run dump.py --chat @somegroup --refetch           # download the saved messages again, see below
 uv run dump.py --chat @somegroup --recheck 7         # look for edits and deletions a week back, see above
@@ -223,17 +243,19 @@ Each topic folder contains:
 | `deleted_at` | when a run found the message gone from Telegram; absent while it is there |
 | `edits` | earlier texts of an edited message, oldest first: `date` (when it was written), `text`, `replaced` (the edit that replaced it) |
 
-`extra` holds only what a message has: `file` (name, size, type, duration, performer and title, sticker emoji), `webpage` (link preview: site, title, description), `poll`, `todo`, `geo`, `venue`, `contact`, `dice`, `game`, `invoice`, `story`, `paid_media`, `media_info` (the fields of any other media), `buttons` (rows of `{text, url}`), `links` (addresses hidden behind words), `reply` (`quote`, and `peer`/`chat`/`from` for a reply to another chat), `fwd` (source id, date, signature), `author` (signature of a channel post), `rank` (admin title), `via_bot`, `action` (fields of a service message), `factcheck`, `restricted`, `effect`, `paid_stars`, `pinned`, `channel_post`. `rich: true` marks a rich message: Telegram's block layout of paragraphs, quotes, lists and tables, saved in `text` as plain text (and as Markdown in `text_md` with the `markdown` extra).
+`extra` holds only what a message has: `file` (name, size, type, duration, performer and title, sticker emoji; with the [`files` extra](#files) also `path`, where the downloaded file is inside the topic folder, and a photo then has a `file` too, with `path`, `size`, `w` and `h`), `webpage` (link preview: site, title, description), `poll`, `todo`, `geo`, `venue`, `contact`, `dice`, `game`, `invoice`, `story`, `paid_media`, `media_info` (the fields of any other media), `buttons` (rows of `{text, url}`), `links` (addresses hidden behind words), `reply` (`quote`, and `peer`/`chat`/`from` for a reply to another chat), `fwd` (source id, date, signature), `author` (signature of a channel post), `rank` (admin title), `via_bot`, `action` (fields of a service message), `factcheck`, `restricted`, `effect`, `paid_stars`, `pinned`, `channel_post`. `rich: true` marks a rich message: Telegram's block layout of paragraphs, quotes, lists and tables, saved in `text` as plain text (and as Markdown in `text_md` with the `markdown` extra).
 
 Next to the topic folders the chat folder has two more files, written whole by every run. **`chat.json`** is what is known about the chat: `kind` (`channel`, `group`, `forum`, `user`, `bot`), `title`, `about`, `members`, `username`, `link`, `invite`, `linked_chat`, `created`, `joined` (when the account joined), `slow_mode` and `auto_delete` in seconds, `members_cannot`, and for a forum `topics`: each with `title`, `date`, `creator_id`, `icon`, `color`, `closed`, `pinned`. Only what the chat has is there. **`users.jsonl`** has a line per person who wrote: `id`, `name`, `username`, `bot`, `deleted`, `bio`, and `updated`, when Telegram was last asked.
 
 Dumps made by versions before 1.3.0 lack some of this: rich messages there have an empty text, and media, buttons and replies have no details. `--refetch` downloads the saved messages again and fills that in; it takes about as long as the first dump, updates rows in place (messages deleted from Telegram since stay, marked as deleted), and rewrites the folders. Ctrl+C stops it, and the next run goes on with it.
 
-The raw data is in `data/<chat id>.sqlite`, with tables `messages`, `topics`, `users`, `chat` (a fact about the chat per row, the picture included), `edits` (earlier texts of edited messages), `tasks` (download progress), `exports` (what was last written to each folder, so a repeat run only appends), `changed` (messages edited or deleted since the last export) and `state` (where Telegram's change log stood at the last run). A database from an older version is brought up to date when it is opened; the first run after that writes the folders again once, since the files show more than before. While a dump runs, `.sqlite-wal` and `.sqlite-shm` files sit next to the database; they are part of it and disappear when the run ends, so copy the database only after that.
+The raw data is in `data/<chat id>.sqlite`, with tables `messages`, `topics`, `users`, `chat` (a fact about the chat per row, the picture included), `edits` (earlier texts of edited messages), `files` (what the `files` extra downloaded and where), `tasks` (download progress), `exports` (what was last written to each folder, so a repeat run only appends), `changed` (messages edited or deleted since the last export) and `state` (where Telegram's change log stood at the last run). A database from an older version is brought up to date when it is opened; the first run after that writes the folders again once, since the files show more than before. While a dump runs, `.sqlite-wal` and `.sqlite-shm` files sit next to the database; they are part of it and disappear when the run ends, so copy the database only after that.
 
 ## Limitations
 
-- Downloads text and metadata only. Media files are recorded by type and details (file name, size, link preview, place...) and not downloaded.
+- Files are downloaded only with the [`files` extra](#files). Without it they are recorded by type and details: file name, size, duration.
+- A file can be downloaded while its message is in Telegram. Of a message deleted before the extra was turned on, only the details remain.
+- The reader does not play animated stickers in Telegram's own format (`.tgs`); the files are saved.
 - The account only sees what Telegram shows it: if the chat hides history from new members, older messages are not available.
 - People are saved when they have written in the chat; the list of members is not downloaded.
 - `--topics` cannot fetch the General topic on its own; the full-chat mode covers it.
@@ -250,7 +272,7 @@ uv run pytest
 uv run ruff check . && uv run ruff format --check .
 ```
 
-The code is in `tgdump/`: `fetch` downloads, `store` turns messages into database rows (with `details` for what goes into `extra` and `rich` for rich messages), `chatinfo` reads the chat's own details, topics, pins and people, `export` writes the folders, `reader` the offline page, `cli` and `interactive` are the two front ends.
+The code is in `tgdump/`: `fetch` downloads, `store` turns messages into database rows (with `details` for what goes into `extra` and `rich` for rich messages), `chatinfo` reads the chat's own details, topics, pins and people, `files` downloads what is attached to the messages, `export` writes the folders, `reader` the offline page, `cli` and `interactive` are the two front ends.
 
 Issues and pull requests are welcome. Please run the tests and linters before opening a PR.
 

@@ -361,6 +361,9 @@ class Telegram:
         self.topics, self.emoji = [], {}  # the forum's topics; custom emoji id -> the emoji it stands for
         self.users_asked = 0  # how many requests about people were made
         self.users_limit = None  # how many of them Telegram answers before it says to wait
+        self.content = {}  # photo or document id -> the bytes of the file
+        self.downloads = []  # (photo or document id, the data centre asked), in the order asked for
+        self.looked_up = 0  # how many messages were asked for by id
 
     async def get_entity(self, peer):
         return self.entity
@@ -370,6 +373,7 @@ class Telegram:
 
     async def get_messages(self, entity, limit=None, ids=None, reverse=False, offset_date=None, filter=None):
         if ids is not None:
+            self.looked_up += len(ids)
             return [self.messages.get(i) for i in ids]
         found = sorted(self.messages.values(), key=lambda m: m.id, reverse=not reverse)
         if offset_date:
@@ -387,6 +391,15 @@ class Telegram:
                     yield m
 
         return walk()
+
+    def iter_download(self, file, dc_id=None, file_size=None):
+        async def chunks():
+            self.downloads.append((file.id, dc_id))
+            if file.id not in self.content:
+                raise errors.FileReferenceExpiredError(None)
+            yield self.content[file.id]
+
+        return chunks()
 
     async def __call__(self, request):
         if isinstance(request, functions.channels.GetFullChannelRequest):

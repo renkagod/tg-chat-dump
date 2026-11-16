@@ -6,18 +6,11 @@ import logging
 from .config import out_dir
 from .reader import write_reader
 from .scope import NO_SCOPE
-from .store import BASE_COLUMNS, JSON_COLUMNS, TOPIC_NAMES, get_chat, open_db
-from .util import slug
+from .store import BASE_COLUMNS, JSON_COLUMNS, TOPIC_NAMES, get_chat, open_db, saved_files
+from .util import size_text, slug, topic_folder
 
 log = logging.getLogger("dump")
 to_json = json.JSONEncoder(ensure_ascii=False).encode  # json.dumps without its setup on every call
-
-
-def size_text(n):
-    for unit in ("B", "KB", "MB", "GB"):
-        if n < 1024 or unit == "GB":
-            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
-        n /= 1024
 
 
 def fields_text(d, skip=("_",)):
@@ -46,6 +39,8 @@ def media_text(extra):
             parts.append(f"{f['duration']:.0f} s")
         if f.get("size"):
             parts.append(size_text(f["size"]))
+        if f.get("path"):
+            parts.append(f["path"])
         return ", ".join(str(p) for p in parts if p)
     if w := extra.get("webpage"):
         return " · ".join(w[k] for k in ("site", "title", "description", "url") if w.get(k))
@@ -142,10 +137,11 @@ def text_line(m):
     return line + "".join(f"\n  [{u}]" for u in under) + "\n"
 
 
-def message_dict(cols, row, edits=None):
+def message_dict(cols, row, edits=None, files=None):
     """A database row as an export record: JSON columns decoded, empty optional fields left out.
 
-    edits: {message id: its earlier texts}, see earlier_texts.
+    edits: {message id: its earlier texts}, see earlier_texts. files: {message id: its downloaded
+    file}, added to extra.file, so the path of a file is where its name and size are.
     """
     m = dict(zip(cols, row, strict=True))
     for c in JSON_COLUMNS:
@@ -154,6 +150,9 @@ def message_dict(cols, row, edits=None):
     m = {k: v for k, v in m.items() if v is not None or k in BASE_COLUMNS}
     if edits and m["id"] in edits:
         m["edits"] = edits[m["id"]]
+    if files and m["id"] in files:
+        extra = m["extra"] = m.get("extra") or {}
+        extra["file"] = {**files[m["id"]], **extra.get("file", {})}
     return m
 
 
@@ -189,11 +188,6 @@ def chat_folder(chat_id, chat_title, scope=NO_SCOPE, out_root=None):
     if scope:
         name += "_" + scope.tag()
     return (out_root or out_dir()) / name
-
-
-def topic_folder(out, topic, titles):
-    """A forum topic's folder; its name follows the topic title."""
-    return out / f"{topic}_{slug(titles.get(topic) or ('General' if topic == 1 else ''))}".rstrip("_")
 
 
 def follow_renames(out, old, new):
@@ -247,7 +241,7 @@ def export(
     fingerprint = json.dumps(sorted(titles.items()), ensure_ascii=False)
     cols = [c[1] for c in db.execute("PRAGMA table_info(messages)")]
     since = None if full or threads else appendable_since(db, out, titles)
-    edits = earlier_texts(db)
+    edits, files = earlier_texts(db), saved_files(db)
     # topic -> its oldest message that changed in place since the last export
     changed = dict(
         db.execute(
@@ -276,7 +270,7 @@ def export(
         ):
             current = None
             for r in db.execute(f"SELECT * FROM messages {where} ORDER BY {order}", params):
-                m = message_dict(cols, r, edits)
+                m = message_dict(cols, r, edits, files)
                 if threads:
                     m["thread"] = m["reply_top"] or m["reply_to"] or m["id"]
                     if m["thread"] != current:

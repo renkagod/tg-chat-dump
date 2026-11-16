@@ -20,7 +20,7 @@ else:
     ROOT = Path.home() / ".tg-chat-dump"
     OUT = Path.home() / "tg-chat-dump"
 DATA = ROOT / "data"  # OUT is the default; TG_OUT in .env overrides it
-KEYS = ("TG_API_ID", "TG_API_HASH", "TG_CHAT", "TG_PROXY", "TG_OUT", "TG_OPTIONS")
+KEYS = ("TG_API_ID", "TG_API_HASH", "TG_CHAT", "TG_PROXY", "TG_OUT", "TG_OPTIONS", "TG_FILE_TYPES", "TG_FILE_SIZE")
 
 # Optional extras, switched on with TG_OPTIONS in .env, --with, or the interactive menu.
 OPTIONS = {
@@ -28,6 +28,7 @@ OPTIONS = {
     "markdown": "formatting and hidden links, as Markdown in text_md",
     "comments": "for channels: also dump the comments under posts",
     "bio": "the bio of everyone who wrote in the chat: a request per person, so slow for a big chat",
+    "files": "download the photos, videos, voice messages and documents, within the limits on size and type",
     "takeout": "Telegram's export mode, about 10x faster (allow it once in the Telegram app)",
     "html": "index.html in the chat folder to read the dump in a browser, offline",
 }

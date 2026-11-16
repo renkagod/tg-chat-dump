@@ -27,9 +27,10 @@ from .accounts import login, make_client, new_session_name, open_accounts
 from .chatinfo import chat_kind
 from .config import DATA, OPTIONS, ensure_api_keys, load_settings, out_dir, save_options, save_settings, saved_options
 from .fetch import Takeouts, dump_chat, saved_by, saved_dumps
+from .files import TYPES, file_limits
 from .scope import KINDS, Scope, parse_date
 from .style import fit, keys, kind, link, paint, visible_len
-from .util import fmt_duration
+from .util import fmt_duration, size_text
 
 log = logging.getLogger("dump")
 FLOOD_RE = re.compile(r"Sleeping (?:early )?for (\d+)s")
@@ -161,6 +162,26 @@ async def change_out_dir():
     print(paint("Saved.", "green") + f" Dumps now go to {link(folder)}")
 
 
+def files_text():
+    """Which files the "files" extra downloads, as the settings say."""
+    try:
+        return str(file_limits())
+    except ValueError as e:
+        return paint(str(e), "red")
+
+
+async def change_file_limits():
+    types = await ask(f"File types, comma-separated: {', '.join(TYPES)}, or all (Enter keeps them): ")
+    size = await ask("Largest file in MB, 0 for no limit (Enter keeps it): ")
+    types, size = ",".join(types.lower().replace(",", " ").split()), size.strip().replace(",", ".")
+    try:
+        file_limits(types or None, size or None)
+    except ValueError as e:
+        print(paint(f"Not saved: {e}", "red"))
+        return
+    save_settings({k: v for k, v in (("TG_FILE_TYPES", types), ("TG_FILE_SIZE", size)) if v})
+
+
 async def options_menu():
     while True:
         on = saved_options()
@@ -168,9 +189,13 @@ async def options_menu():
         for i, (name, about) in enumerate(OPTIONS.items(), 1):
             box = paint(f"[x] {name:<9}", "green") if name in on else paint("[ ]", "dim") + f" {name:<9}"
             print(f"  {paint(f'{i})', 'blue')} {box} {paint(about, 'dim')}")
-        choice = await ask(keys("Number to toggle, Enter to go back > "))
+        if "files" in on:
+            print(f"  {paint('Files downloaded:', 'dim')} {files_text()}")
+        choice = await ask(keys("Number to toggle, [f] which files, Enter to go back > "))
         if not choice:
             return
+        if choice.lower() == "f":
+            await change_file_limits()
         if choice.isdigit() and 1 <= int(choice) <= len(OPTIONS):
             save_options(on ^ {list(OPTIONS)[int(choice) - 1]})
 
@@ -586,10 +611,14 @@ class ProgressLine:
                 "checking": "looking for edits and deletions…",
                 "people": "asking about the people in the chat…",
                 "exporting": "writing topic folders…",
+                "files": "looking for files to download…",
                 "done": "done",
             }.get(phase, phase)
             if phase == "people" and s.get("people"):
                 text = "reading bios… {:,} of {:,}".format(*s["people"])
+            if phase == "files" and s.get("files"):
+                done, total, weight = s["files"]
+                text = f"downloading files… {done:,} of {total:,}, {size_text(weight)}"
             return f"{paint(spin, 'blue')} {label}{paint(text, 'dim')}"
 
         work_total, work_left = s.get("work_total", 0), s.get("work_left", 0)
