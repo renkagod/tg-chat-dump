@@ -223,7 +223,7 @@ wheels = [
 
 [[package]]
 name = "tg-chat-dump"
-version = "1.8.1"
+version = "1.9.0"
 source = { editable = "." }
 dependencies = [
     { name = "cryptg", marker = "(platform_machine == 'arm64' and platform_python_implementation == 'CPython' and sys_platform == 'darwin') or (platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (platform_machine == 'x86_64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (platform_machine != 'ARM64' and platform_python_implementation == 'CPython' and sys_platform == 'win32')" },
