@@ -29,6 +29,7 @@ from .config import DATA, OPTIONS, ensure_api_keys, load_settings, out_dir, save
 from .fetch import Takeouts, dump_chat, saved_by, saved_dumps
 from .files import TYPES, file_limits
 from .scope import KINDS, Scope, parse_date
+from .search import report
 from .style import fit, keys, kind, link, paint, visible_len
 from .util import fmt_duration, size_text
 
@@ -405,6 +406,7 @@ def chat_prompt(chats, n_accounts):
 async def ask_chat(session):
     hint = (
         f"{paint('[Enter]', 'blue')} {paint('your dumps', 'dim')}   "
+        f"{paint('[?words]', 'blue')} {paint('search them', 'dim')}   "
         f"{paint('[/]', 'blue')} {paint('settings: accounts, extras, output folder', 'dim')}   "
         f"{paint('[q]', 'blue')} {paint('quit', 'dim')}"
     )
@@ -425,6 +427,13 @@ async def pick_chat(accounts, chats, session):
             return SETTINGS
         if q.lower() in QUIT:
             return QUIT
+        if q.startswith("?"):  # look in what is saved already, not for a chat
+            try:
+                await asyncio.to_thread(report, q[1:])
+            except ValueError:
+                print(paint("Type the words after the question mark: ?pizza", "yellow"))
+            q = None
+            continue
         if not q and (dumps := dumped_items(chats)):
             print_dumps(dumps)
             hint = f"Number or several (2 5 7, 4-6), [u] update all {len(dumps)}, a name, or [q] quit > "

@@ -16,6 +16,7 @@ from .fetch import RECHECK_DAYS, Takeouts, dump_chat, saved_dumps
 from .files import DEFAULT_SIZE, DEFAULT_TYPES, TYPES, file_limits
 from .imports import import_result
 from .scope import KINDS, Scope, parse_date
+from .search import LIMIT, report
 from .util import parse_chat
 
 log = logging.getLogger("dump")
@@ -43,7 +44,7 @@ def parse_args():
         epilog="Run without arguments for the interactive mode.",
     )
     p.add_argument("target", nargs="?", metavar="CHAT", help="chat id, @username or t.me link (same as --chat)")
-    p.add_argument("--chat", default=s["TG_CHAT"], help="chat id, @username or t.me link")
+    p.add_argument("--chat", help="chat id, @username or t.me link")
     p.add_argument("--update-all", action="store_true", help="fetch the new messages of every chat dumped before")
     p.add_argument(
         "--topics",
@@ -83,6 +84,19 @@ def parse_args():
     p.add_argument("--out", metavar="DIR", help="output folder; it is saved to .env and used from now on")
     p.add_argument("--export-only", action="store_true", help="rebuild the output folders from the database")
     p.add_argument(
+        "--search",
+        metavar="TEXT",
+        help="look for these words in every chat dumped before, without the network; a chat named with it and "
+        "--since, --until, --from, --type narrow the search",
+    )
+    p.add_argument(
+        "--limit",
+        type=int,
+        default=LIMIT,
+        metavar="N",
+        help=f"how many matches --search shows per chat (default {LIMIT})",
+    )
+    p.add_argument(
         "--import",
         dest="import_path",
         metavar="PATH",
@@ -105,8 +119,9 @@ def parse_args():
     )
     p.add_argument("--login", metavar="NAME", help="log in one more account to data/NAME.session and exit")
     a = p.parse_args()
-    a.chat = a.target or a.chat
-    if not a.chat and not a.login and not a.update_all and not a.import_path:
+    a.named = a.target or a.chat  # the chat named on the command line, if any
+    a.chat = a.named or s["TG_CHAT"]
+    if not a.chat and not a.login and not a.update_all and not a.import_path and a.search is None:
         p.error("name a chat (tg-chat-dump @somegroup), pass --update-all, or set TG_CHAT in .env")
     try:
         a.options = parse_options(a.options)
@@ -161,6 +176,12 @@ async def main():
             raise SystemExit(f"Cannot read the export: {e}") from None
         if not found:
             raise SystemExit("The export has no chats with messages")
+        return
+    if a.search is not None:  # the saved dumps are read as they are
+        try:
+            report(a.search, a.scope, a.named, a.limit)
+        except ValueError as e:
+            raise SystemExit(f"--search: {e}") from None
         return
     ensure_api_keys()
     if a.out:

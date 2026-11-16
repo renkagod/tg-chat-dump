@@ -40,6 +40,7 @@ out/1234567890_My_Chat/
 - Optional extras, each a toggle: reactions and views, formatting with hidden links, comments under channel posts, people's bios, files, and Telegram's export mode (see [Extras](#extras)).
 - Other formats in and out: a CSV for spreadsheets, the JSON of Telegram Desktop's own export for the programs that read it, and an export made by Telegram Desktop read into a dump, which brings back messages deleted since (see [Other formats](#other-formats)).
 - Filters by date range, author or message type, such as links or documents.
+- Search across all your dumps at once, offline (see [Search](#search)).
 - On `FLOOD_WAIT` the run sleeps and then continues on its own.
 - SOCKS5 and HTTP proxies, for networks where Telegram is blocked.
 - `index.html` to read the dump in a browser, offline; `messages.txt` for reading in an editor, `messages.jsonl` for scripts, and the SQLite database for queries.
@@ -83,6 +84,7 @@ Dump it with 2 accounts, extras: takeout, html? [Y/n, f = filters]
 ```
 
 - Matching chats pop up under the cursor as you type; Tab fills in the highlighted one and Enter picks it. A pasted `t.me` link or an exact `@username` works too.
+- `?` and some words search the messages of the chats you dumped before (see [Search](#search)).
 - Enter on an empty search lists the chats you dumped before, the latest first, with how many messages are saved. Pick one to fetch its new messages, several to update them in a row (`2 5 7` or `4-6`), or `u` for all of them.
 - If nothing in your chats matches the search, public groups and channels are searched too. Public chats can be dumped without joining.
 - Every account that can see the chat is used. A private chat or a small (non-super) group is the exception: each account has its own copy of it, so you see how many messages each one has and pick one. Enter takes the account that saved the chat before, or the biggest copy.
@@ -169,6 +171,27 @@ Filters narrow it down: `--type photos --with files` downloads the photos of a c
 
 A web page sent to the chat (`.html`, `.svg`) is saved like any other file, but the reader does not link to it: opened from the folder of the dump, a page could read the dump.
 
+## Search
+
+`--search` looks for words in everything you have dumped, all chats at once, without the network:
+
+```sh
+uv run dump.py --search "pizza cutter"                    # messages that have both words, in any case
+uv run dump.py --search '"pizza cutter"'                  # the phrase as it is
+uv run dump.py --search pizza @somegroup --from @alice    # in one chat, from one author
+uv run dump.py --search invoice --since 2026-01 --type docs --limit 100
+```
+
+```
+Forum Club: 2 messages  file:///D:/Telegram%20dumps/1234567890_Forum_Club/index.html
+  2026-03-14 09:02  Plans · Bob: pizza is fine, but who brings the pizza cutter?  #topic/12/msg/1043
+  2026-03-14 09:01  Alice: no pizza for me  #topic/1/msg/1042
+```
+
+Every chat with matches is listed with the address of its reader and its newest matches, 20 unless `--limit` says otherwise. The end of a line is the message's place in the reader: `index.html#topic/12/msg/1043` opens it. The chat is named by id, `@username`, link or a part of its title, and `--from` takes an id, an `@username` or a part of a name: the search knows what is saved and asks Telegram nothing. Deleted messages are found too, and marked. Two million messages in nine chats are searched in about five seconds.
+
+In the interactive mode, type the words after a question mark at the chat prompt: `?pizza cutter`.
+
 ## Other formats
 
 Two extras write the dump in formats other programs read, next to the usual files.
@@ -201,6 +224,7 @@ uv run dump.py --update-all                          # new messages of every cha
 uv run dump.py --chat @somegroup --topics 12,37      # only these forum topics; 1 is General
 uv run dump.py --chat @somegroup --with meta,markdown   # with extras
 uv run dump.py --chat @somegroup --with files --file-size 50   # with files up to 50 MB, see above
+uv run dump.py --search "pizza cutter"               # look for words in every chat dumped before, see above
 uv run dump.py --chat @somegroup --export-only       # rebuild the folders from the database, no network
 uv run dump.py --chat @somegroup --with csv,tdesktop   # also as a spreadsheet and as Telegram Desktop's JSON
 uv run dump.py --import "D:\Downloads\ChatExport"     # read an export made by Telegram Desktop, see above
@@ -305,7 +329,7 @@ uv run pytest
 uv run ruff check . && uv run ruff format --check .
 ```
 
-The code is in `tgdump/`: `fetch` downloads, `store` turns messages into database rows (with `details` for what goes into `extra` and `rich` for rich messages), `chatinfo` reads the chat's own details, topics, pins and people, `files` downloads what is attached to the messages, `export` writes the folders, `reader` the offline page, `tdesktop` knows Telegram Desktop's export format and `imports` reads such an export into a dump, `cli` and `interactive` are the two front ends.
+The code is in `tgdump/`: `fetch` downloads, `store` turns messages into database rows (with `details` for what goes into `extra` and `rich` for rich messages), `chatinfo` reads the chat's own details, topics, pins and people, `files` downloads what is attached to the messages, `export` writes the folders, `reader` the offline page, `tdesktop` knows Telegram Desktop's export format and `imports` reads such an export into a dump, `search` looks through the saved dumps, `cli` and `interactive` are the two front ends.
 
 Issues and pull requests are welcome. Please run the tests and linters before opening a PR.
 
