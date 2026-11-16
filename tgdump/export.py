@@ -206,25 +206,33 @@ def message_dict(cols, row, edits=None, files=None, who=None):
     return m
 
 
-def earlier_texts(db):
-    """{message id: [{date, text, replaced}]}: what edited messages said before, the oldest text first."""
+def earlier_texts(db, where="", params=()):
+    """{message id: [{date, text, replaced}]}: what edited messages said before, the oldest text first.
+
+    where: more conditions on the message, as " AND m.topic_id IS ?", to read only the texts of those.
+    """
     found = {}
-    for mid, date, text, replaced in db.execute("SELECT id, date, text, replaced FROM edits ORDER BY id, date"):
+    sql = "SELECT e.id, e.date, e.text, e.replaced FROM edits e"
+    sql += (" JOIN messages m ON m.id = e.id WHERE 1" + where if where else "") + " ORDER BY e.id, e.date"
+    for mid, date, text, replaced in db.execute(sql, params):
         found.setdefault(mid, []).append({"date": date, "text": text, "replaced": replaced})
     return found
 
 
-def who_said(db):
+def who_said(db, where="", params=()):
     """({message id: who reacted to it}, {message id: who voted in its poll}), what the "who" extra found.
 
     Each is a list of {user_id, name, reaction or option, date}; option is the answer's place in the poll.
+    where: more conditions on the message, as " AND m.topic_id IS ?", to read only what is said of those.
     """
     found = []
     for table, key in (("reacted", "reaction"), ("voted", "option")):
         by = {}
         rows = db.execute(
-            f"SELECT w.id, w.user_id, u.name, w.{key}, w.date FROM {table} w LEFT JOIN users u ON u.id = w.user_id "
-            f"ORDER BY w.id, w.{key}, w.date, w.user_id"
+            f"SELECT w.id, w.user_id, u.name, w.{key}, w.date FROM {table} w LEFT JOIN users u ON u.id = w.user_id"
+            + (f" JOIN messages m ON m.id = w.id WHERE 1{where}" if where else "")
+            + f" ORDER BY w.id, w.{key}, w.date, w.user_id",
+            params,
         )
         for mid, uid, name, what, date in rows:
             by.setdefault(mid, []).append({"user_id": uid, "name": name, key: what, "date": date})
@@ -324,7 +332,6 @@ def export(
         saved = [t for (t,) in db.execute("SELECT DISTINCT topic_id FROM messages WHERE id <= ?", (since,))]
         if not all(((out if t is None else topic_folder(out, t, titles)) / "messages.csv").is_file() for t in saved):
             since = None
-    edits, files, who = earlier_texts(db), saved_files(db), who_said(db)
     # topic -> its oldest message that changed in place since the last export
     changed = dict(
         db.execute(
@@ -345,6 +352,9 @@ def export(
             for t in topic_ids
         ]
     for t, where, params, order, mode in groups:
+        # what is said of these messages only: an appending run writes a few of them
+        mine = "" if threads else " AND m.topic_id IS ?" + (" AND m.id > ?" if mode == "a" else "")
+        edits, files, who = (load(db, mine, params) for load in (earlier_texts, saved_files, who_said))
         target = out if t is None else topic_folder(out, t, titles)
         target.mkdir(parents=True, exist_ok=True)
         with (
@@ -374,6 +384,7 @@ def export(
                     table.writerow(csv_row(m))
     if "tdesktop" in formats and (groups or not (out / "result.json").exists()):
         out.mkdir(parents=True, exist_ok=True)
+        edits, files, who = earlier_texts(db), saved_files(db), who_said(db)  # the whole chat is written
         rows = db.execute("SELECT * FROM messages ORDER BY id")
         every = (message_dict(cols, r, edits, files, who) for r in rows)
         write_result(db, out, chat_title, every, titles, threads)

@@ -414,11 +414,16 @@ def recheck_topics(db, topics, first_id):
     db.commit()
 
 
-def saved_files(db):
-    """{message id: {path, size, w, h}} of the downloaded files; a path is inside the topic's folder."""
+def saved_files(db, where="", params=()):
+    """{message id: {path, size, w, h}} of the downloaded files; a path is inside the topic's folder.
+
+    where: more conditions on the message, as " AND m.topic_id IS ?", to read only the files of those.
+    """
     names = ("path", "size", "w", "h")
     found = {}
-    for mid, *row in db.execute("SELECT id, path, size, w, h FROM files WHERE path IS NOT NULL"):
+    sql = "SELECT f.id, f.path, f.size, f.w, f.h FROM files f"
+    sql += " JOIN messages m ON m.id = f.id WHERE f.path IS NOT NULL" + where if where else " WHERE f.path IS NOT NULL"
+    for mid, *row in db.execute(sql, params):
         found[mid] = {k: v for k, v in zip(names, row, strict=True) if v is not None}
     return found
 

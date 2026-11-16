@@ -276,3 +276,22 @@ def test_a_reaction_without_a_date_is_still_written_for_telegram_desktop():
 
     found = reaction_list({"👍": 1}, [{"user_id": 11, "name": "Ann", "reaction": "👍", "date": None}])
     assert found[0]["recent"] == [{"from": "Ann", "from_id": "user11"}]
+
+
+def test_what_is_said_of_messages_is_read_only_for_those_written(tmp_path):
+    from tgdump.export import earlier_texts, who_said
+    from tgdump.store import saved_files
+
+    db = open_db(tmp_path / "7.sqlite")
+    for mid, topic in ((1, 5), (2, 5), (3, 9)):
+        db.execute("INSERT INTO messages(id, date, topic_id) VALUES(?, ?, ?)", (mid, NOW, topic))
+        db.execute("INSERT INTO edits(id, date, text) VALUES(?, ?, 'before')", (mid, NOW))
+        db.execute("INSERT INTO files(id, path, size) VALUES(?, ?, 10)", (mid, f"files/{mid}.jpg"))
+        db.execute("INSERT INTO reacted VALUES(?, 11, '👍', ?)", (mid, NOW))
+        db.execute("INSERT INTO voted VALUES(?, 11, 0, ?)", (mid, NOW))
+    mine, args = " AND m.topic_id IS ? AND m.id > ?", (5, 1)  # what an appending export of topic 5 writes
+    assert list(earlier_texts(db, mine, args)) == [2] and list(saved_files(db, mine, args)) == [2]
+    assert [list(found) for found in who_said(db, mine, args)] == [[2], [2]]
+    assert list(earlier_texts(db)) == list(saved_files(db)) == [1, 2, 3]  # with no condition, all of them
+    assert [list(found) for found in who_said(db)] == [[1, 2, 3], [1, 2, 3]]
+    db.close()

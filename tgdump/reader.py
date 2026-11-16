@@ -30,12 +30,12 @@ _SELECT = (
 # earlier texts of edited messages as [unix time of the edit that replaced it, text], the oldest first
 _EDITS = (
     "SELECT e.id, CAST(strftime('%s', e.replaced) AS INTEGER), COALESCE(NULLIF(e.text_md, ''), e.text)"
-    " FROM edits e JOIN messages m ON m.id = e.id"
+    " FROM edits e JOIN messages m ON m.id = e.id WHERE 1"
 )
 # who reacted and who voted (the "who" extra), as the name the chat knows them by
 _WHO = {
     kind: f"SELECT w.id, w.{key}, COALESCE(u.name, w.user_id) FROM {kind} w JOIN messages m ON m.id = w.id"
-    " LEFT JOIN users u ON u.id = w.user_id"
+    " LEFT JOIN users u ON u.id = w.user_id WHERE 1"
     for kind, key in (("reacted", "reaction"), ("voted", "option"))
 }
 # details the page does not show; "links" is left out too when the Markdown text already has them
@@ -112,11 +112,9 @@ class _Part:
         os.replace(self.tmp, self.path)
 
 
-def _write_list(db, data, key, topic, threads, first=0, files=None):
-    """Stream one list into its parts, starting with part `first` (earlier parts are kept).
-
-    files: {message id: its downloaded file}, shown in the message.
-    """
+def _write_list(db, data, key, topic, threads, first=0):
+    """Stream one list into its parts, starting with part `first` (earlier parts are kept)."""
+    where, args = ("", ()) if threads else (" AND m.topic_id IS ?", (topic,))
     if threads:
         sql, params = _SELECT + " ORDER BY COALESCE(reply_top, reply_to, id), id", ()
     elif first:
@@ -127,10 +125,10 @@ def _write_list(db, data, key, topic, threads, first=0, files=None):
         if start is None:
             return
         sql, params = _SELECT + " WHERE topic_id IS ? AND id >= ? ORDER BY id", (topic, start[0])
+        where, args = where + " AND m.id >= ?", (topic, start[0])  # what is said of the parts written
     else:
         sql, params = _SELECT + " WHERE topic_id IS ? ORDER BY id", (topic,)
-    edits = {}
-    where, args = ("", ()) if threads else (" WHERE m.topic_id IS ?", (topic,))
+    files, edits = saved_files(db, where, args), {}
     for mid, when, text in db.execute(_EDITS + where + " ORDER BY e.id, e.date", args):
         edits.setdefault(mid, []).append([when or 0, text or ""])
     who = {}  # message id -> {reacted: {reaction: [names]}, voted: {the answer's place: [names]}}
@@ -219,7 +217,7 @@ def write_reader(db, out, chat_title, titles, topics=None, threads=False, since=
         groups = db.execute("SELECT topic_id, COUNT(*), MAX(id) FROM messages GROUP BY topic_id").fetchall()
     groups = [g for g in groups if g[1]]
     forum = not threads and any(t is not None for t, *_ in groups)
-    about, files = topic_meta(db) if forum else {}, saved_files(db)
+    about = topic_meta(db) if forum else {}
     entries, keep = [], set()
     for t, count, newest in groups:
         key = "all" if t is None else str(t)
@@ -236,7 +234,7 @@ def write_reader(db, out, chat_title, titles, topics=None, threads=False, since=
         if threads and first < parts:
             first = 0  # ordered by thread, not id: a new message can land in any part
         if first < parts:
-            _write_list(db, data, key, t, threads, first, files)
+            _write_list(db, data, key, t, threads, first)
         if not forum:
             title = chat_title
         elif t is None:
