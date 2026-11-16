@@ -293,6 +293,10 @@ def test_progress_line_counts_the_files():
     line = ProgressLine({"phase": "files", "files": (1200, 3400, 310 * 1024 * 1024)}, watch).render()
     assert "downloading files… 1,200 of 3,400, 310.0 MB" in line
     assert "looking for files" in ProgressLine({"phase": "files"}, watch).render()
+    # the extras run together, and the line shows each of them
+    stats = {"phase": "who", "people": (5, 40), "who": (300, 900), "files": (2, 10, 2048)}
+    line = ProgressLine(stats, watch).render(300)
+    assert "reading bios… 5 of 40 · asking who reacted… 300 of 900 · downloading files… 2 of 10" in line
 
 
 def test_a_stopped_download_leaves_no_half_of_a_file(home):
