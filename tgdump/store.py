@@ -74,6 +74,14 @@ CREATE TABLE IF NOT EXISTS edits(
   id INTEGER, date TEXT, text TEXT, text_md TEXT, replaced TEXT, PRIMARY KEY(id, date));
 -- messages changed in place since the last export, so their part of it is written again
 CREATE TABLE IF NOT EXISTS changed(id INTEGER PRIMARY KEY);
+-- the "who" extra: who reacted to a message and who voted in its poll. user_id is an id as in users,
+-- option the answer's place in the poll. asked keeps the counts a message had when it was asked about,
+-- so it is asked again only when they change
+CREATE TABLE IF NOT EXISTS reacted(
+  id INTEGER, user_id INTEGER, reaction TEXT, date TEXT, PRIMARY KEY(id, user_id, reaction)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS voted(
+  id INTEGER, user_id INTEGER, option INTEGER, date TEXT, PRIMARY KEY(id, user_id, option)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS asked(id INTEGER, what TEXT, seen TEXT, PRIMARY KEY(id, what)) WITHOUT ROWID;
 -- where the chat stands: its pts (Telegram's change counter) and the time of the last check for edits
 CREATE TABLE IF NOT EXISTS state(key TEXT PRIMARY KEY, value);
 -- everyone who wrote in the chat, as Telegram showed them last (`updated` is when). A positive id is a person
@@ -203,17 +211,16 @@ def reactions_of(m):
     rs = getattr(m, "reactions", None)
     if not rs or not rs.results:
         return None
-    out = {}
-    for rc in rs.results:
-        r = rc.reaction
-        if isinstance(r, types.ReactionEmoji):
-            key = r.emoticon
-        elif isinstance(r, types.ReactionCustomEmoji):
-            key = f"custom:{r.document_id}"
-        else:
-            key = type(r).__name__.removeprefix("Reaction").lower()  # e.g. "paid"
-        out[key] = rc.count
-    return out
+    return {reaction_key(rc.reaction): rc.count for rc in rs.results}
+
+
+def reaction_key(r):
+    """A reaction as the dump names it: the emoji itself, custom:<id> for a custom one, or its kind."""
+    if isinstance(r, types.ReactionEmoji):
+        return r.emoticon
+    if isinstance(r, types.ReactionCustomEmoji):
+        return f"custom:{r.document_id}"
+    return type(r).__name__.removeprefix("Reaction").lower()  # e.g. "paid"
 
 
 def to_row(m, forum, options=frozenset()):
@@ -251,6 +258,7 @@ def to_row(m, forum, options=frozenset()):
         views, forwards = getattr(m, "views", None), getattr(m, "forwards", None)
         rp = getattr(m, "replies", None)
         replies = rp.replies if rp else None
+    if "meta" in options or "who" in options:  # who reacted is asked about the messages that have reactions
         reactions = reactions_of(m)
 
     return (
@@ -446,7 +454,8 @@ def clear(db):
     """Forget everything downloaded, so the chat is fetched again from scratch."""
     db.executescript(
         "DELETE FROM messages; DELETE FROM tasks; DELETE FROM topics; DELETE FROM edits; DELETE FROM changed;"
-        "DELETE FROM state; DELETE FROM users; DELETE FROM chat; DELETE FROM files; UPDATE exports SET max_id=-1;"
+        "DELETE FROM state; DELETE FROM users; DELETE FROM chat; DELETE FROM files; DELETE FROM reacted;"
+        "DELETE FROM voted; DELETE FROM asked; UPDATE exports SET max_id=-1;"
     )
 
 

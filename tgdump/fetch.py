@@ -45,6 +45,7 @@ from .store import (
     to_row,
 )
 from .util import fmt_duration, iso, parse_chat
+from .who import fetch_who
 
 log = logging.getLogger("dump")
 RECHECK_DAYS = 2  # how far before the last run messages are downloaded again when Telegram's change log is no help
@@ -231,6 +232,16 @@ def copy_scope(whole_path, db_path, scope, sender_id=None):
         db.execute("INSERT INTO users SELECT * FROM whole.users WHERE id IN (SELECT sender_id FROM messages)")
         db.execute("DELETE FROM edits")
         db.execute("INSERT INTO edits SELECT * FROM whole.edits WHERE id IN (SELECT id FROM messages)")
+        # who reacted and who voted: what the whole dump knows is added to what was asked here
+        for table in ("reacted", "voted", "asked"):
+            db.execute(f"DELETE FROM {table} WHERE id NOT IN (SELECT id FROM messages)")
+            db.execute(
+                f"INSERT OR IGNORE INTO {table} SELECT * FROM whole.{table} WHERE id IN (SELECT id FROM messages)"
+            )
+        db.execute(
+            "INSERT OR IGNORE INTO users SELECT * FROM whole.users WHERE id IN "
+            "(SELECT user_id FROM reacted UNION SELECT user_id FROM voted)"
+        )
         db.commit()
         db.execute("DETACH DATABASE whole")
         return db.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
@@ -315,6 +326,7 @@ async def dump_chat(
     again=False,
     recheck=RECHECK_DAYS,
     files=None,
+    who=True,
 ):
     """Download a chat with every client that can see it, then export it.
 
@@ -324,6 +336,8 @@ async def dump_chat(
     `recheck` days before the last run on. recheck=0 leaves the saved messages alone.
 
     `files` (a files.Limits) says which files the "files" extra downloads; without it the saved settings do.
+    who=False leaves the asking of the "who" extra to the caller: the reactions are counted, nobody is asked
+    who put them.
     `takeouts` (a Takeouts) keeps export mode open for later dumps; without it, it is closed when this one ends.
     `stats` (a dict) is updated in place for progress display: phase, label, total
     (approximate message count from Telegram), stored, fetched, accounts, and
@@ -375,8 +389,9 @@ async def dump_chat(
                 topics=topics,
                 workers=workers,
                 stats=stats,
-                # the files are wanted for the filtered messages only, and are downloaded below
+                # the files, and who reacted, are wanted for the filtered messages only: see below
                 options=options - {"comments", "files"},
+                who=False,
                 takeouts=takeouts,
                 again=again,
                 recheck=recheck,
@@ -394,6 +409,8 @@ async def dump_chat(
                 export_db, db_path, entity.id, title, scope=scope, reader="html" in options, formats=options
             )
             out = await asyncio.to_thread(export, full=again)
+            if "who" in options:
+                await save_who(pairs, entity, db_path, now, stats, export)
             if "files" in options:
                 await save_files(pairs, db_path, out, files, now, stats, export, workers=workers)
             stats["phase"] = "done"
@@ -570,8 +587,10 @@ async def dump_chat(
         finally:
             write_about(db, out)  # also when stopped: users.jsonl gets the bios read so far
             db.close()
+    mine = list(zip(plain, (e for _, e in pairs), strict=True))  # the accounts themselves, not in export mode
+    if "who" in options and who:
+        await save_who(mine, entity, db_path, now, stats, export, topics)
     if "files" in options:
-        mine = list(zip(plain, (e for _, e in pairs), strict=True))  # files are not served in export mode
         await save_files(mine, db_path, out, files, now, stats, export, topics, threads, workers)
 
     if "comments" in options and isinstance(entity, Channel) and entity.broadcast:
@@ -580,6 +599,23 @@ async def dump_chat(
         )
     stats["phase"] = "done"
     return out
+
+
+async def save_who(pairs, entity, db_path, when, stats, export, topics=None):
+    """The "who" extra. It comes after the export, so the messages are all in place if it is stopped;
+    the export is then run once more, to show what was answered. What a stopped run was told is saved, and
+    shown by the next export."""
+    if isinstance(entity, Channel) and entity.broadcast:
+        log.info("A channel does not say who reacted to its posts")
+        return
+    db = open_db(db_path)
+    try:
+        asked = await fetch_who(pairs, db, when, stats, topics)
+    finally:
+        db.close()
+    if asked:
+        stats["phase"] = "exporting"
+        await asyncio.to_thread(export)
 
 
 async def save_files(pairs, db_path, out, limits, when, stats, export, topics=None, threads=False, workers=3):

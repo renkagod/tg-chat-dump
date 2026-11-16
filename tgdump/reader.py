@@ -32,6 +32,12 @@ _EDITS = (
     "SELECT e.id, CAST(strftime('%s', e.replaced) AS INTEGER), COALESCE(NULLIF(e.text_md, ''), e.text)"
     " FROM edits e JOIN messages m ON m.id = e.id"
 )
+# who reacted and who voted (the "who" extra), as the name the chat knows them by
+_WHO = {
+    kind: f"SELECT w.id, w.{key}, COALESCE(u.name, w.user_id) FROM {kind} w JOIN messages m ON m.id = w.id"
+    " LEFT JOIN users u ON u.id = w.user_id"
+    for kind, key in (("reacted", "reaction"), ("voted", "option"))
+}
 # details the page does not show; "links" is left out too when the Markdown text already has them
 _UNSHOWN = {"channel_post", "rich", "boosts", "effect"}
 # what the page tells about the chat itself, from the chat table
@@ -127,6 +133,10 @@ def _write_list(db, data, key, topic, threads, first=0, files=None):
     where, args = ("", ()) if threads else (" WHERE m.topic_id IS ?", (topic,))
     for mid, when, text in db.execute(_EDITS + where + " ORDER BY e.id, e.date", args):
         edits.setdefault(mid, []).append([when or 0, text or ""])
+    who = {}  # message id -> {reacted: {reaction: [names]}, voted: {the answer's place: [names]}}
+    for kind, select in _WHO.items():
+        for mid, what, name in db.execute(select + where + " ORDER BY w.id, w.date, w.user_id", args):
+            who.setdefault(mid, {}).setdefault(kind, {}).setdefault(what, []).append(str(name))
     part, n, current = None, first, None
     try:
         for r in db.execute(sql, params):
@@ -157,6 +167,8 @@ def _write_list(db, data, key, topic, threads, first=0, files=None):
                     ex["deleted"] = deleted
                 if mid in edits:
                     ex["edits"] = edits[mid]
+            if mid in who:
+                ex = {**(ex or {}), **who[mid]}
             row = [
                 mid,
                 date or 0,
@@ -518,6 +530,7 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1
 .bar { height: 5px; margin: 4px 0 0 44px; border-radius: 3px; background: var(--fill); overflow: hidden; }
 .bar i { display: block; height: 100%; border-radius: 3px; background: var(--text3); }
 .pa.top .bar i { background: var(--accent); }
+.pn { margin-top: 3px; font-size: 12px; color: var(--text3); }
 .pv { margin-top: 10px; font-size: 12px; color: var(--text3); font-variant-numeric: tabular-nums; }
 .todo ul { list-style: none; margin: 4px 0 0; padding: 0; }
 .todo li { display: flex; gap: 10px; align-items: flex-start; margin: 7px 0 0; font-size: 14px; }
@@ -529,6 +542,8 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1
 .foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0 2px; }
 .rx { padding: 2px 9px; border-radius: 999px; background: var(--fill); font-size: 13px;
   font-variant-numeric: tabular-nums; }
+.rx.by { cursor: pointer; }
+.rby { margin: 0 0 3px; font-size: 12px; color: var(--text3); }
 .stats { font-size: 12px; color: var(--text3); font-variant-numeric: tabular-nums; }
 .alb { border-radius: 0; margin-top: 0; }
 .alb.alb-s { border-radius: 12px 12px 0 0; }
@@ -1051,7 +1066,7 @@ function note(label, text, links) {
   return n;
 }
 const ACTION_SHOWN = new Set(["names", "title", "users", "icon_color", "icon_emoji_id"]);
-function pollCard(p) {
+function pollCard(p, voted) {
   const c = h("div", "poll");
   const qq = h("div", "pq");
   marked(qq, p.question || "");
@@ -1062,7 +1077,7 @@ function pollCard(p) {
   const total = p.total_voters || 0, answers = p.answers || [];
   const top = Math.max(0, ...answers.map((a) => a.voters || 0));
   const known = answers.some((a) => a.voters != null);
-  for (const a of answers) {
+  for (const [i, a] of answers.entries()) {
     const v = a.voters || 0, pct = total ? Math.round((v * 100) / total) : 0;
     const row = h("div", "pa" + (known && v && v === top ? " top" : ""));
     const l = h("div", "pl"), t = h("span", "pt");
@@ -1075,6 +1090,7 @@ function pollCard(p) {
       bar.append(fill);
       row.append(bar);
     }
+    if (voted && voted[i]) row.append(h("div", "pn", voted[i].join(", ")));
     c.append(row);
   }
   c.append(h("div", "pv", total ? plural(total, "vote") : "No votes"));
@@ -1205,7 +1221,7 @@ function renderRow(i) {
     if (info) c.append(h("span", "cd", info));
     return c;
   };
-  if (ex.poll) body.append(pollCard(ex.poll));
+  if (ex.poll) body.append(pollCard(ex.poll, ex.voted));
   else if (ex.todo) body.append(todoCard(ex.todo));
   else if (media && media !== "WebPage") {
     const [shown, alone] = file
@@ -1227,11 +1243,22 @@ function renderRow(i) {
     body.append(note(`Fact check${fc.country ? " · " + fc.country : ""}:`, fc.text));
   }
   for (const x of ex.restricted || []) body.append(note(`Restricted on ${x.platform}:`, x.text || x.reason));
-  const foot = h("div", "foot");
+  const foot = h("div", "foot"), names = h("div", "rby");
+  names.hidden = true;
   if (r[REACT]) {
     for (const [k, v] of Object.entries(r[REACT]).sort((a, b) => b[1] - a[1])) {
       const e = k.startsWith("custom:") ? "✦" : k === "paid" ? "⭐" : k;
-      foot.append(h("span", "rx", `${e} ${num.format(v)}`));
+      const chip = h("span", "rx", `${e} ${num.format(v)}`), by = ex.reacted && ex.reacted[k];
+      if (by) {  // who put it: on hover, and under the message on a click
+        chip.title = by.join(", ");
+        chip.classList.add("by");
+        chip.onclick = () => {
+          names.hidden = !names.hidden && names.dataset.k === k;
+          names.dataset.k = k;
+          names.textContent = `${e} ${by.join(", ")}`;
+        };
+      }
+      foot.append(chip);
     }
   }
   const stats = [];
@@ -1245,7 +1272,7 @@ function renderRow(i) {
     foot.append(st);
   }
   if (ex.deleted && !head) foot.append(goneTag(ex.deleted));
-  if (foot.firstChild) body.append(foot);
+  if (foot.firstChild) body.append(foot, names);
   m.append(body);
   row.append(m);
   return row;

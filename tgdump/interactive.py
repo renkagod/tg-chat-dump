@@ -655,6 +655,8 @@ class ProgressLine:
             }.get(phase, phase)
             if phase == "people" and s.get("people"):
                 text = "reading bios… {:,} of {:,}".format(*s["people"])
+            if phase == "who" and s.get("who"):
+                text = "asking who reacted… {:,} of {:,}".format(*s["who"])
             if phase == "files" and s.get("files"):
                 done, total, weight = s["files"]
                 text = f"downloading files… {done:,} of {total:,}, {size_text(weight)}"

@@ -28,6 +28,7 @@ OPTIONS = {
     "markdown": "formatting and hidden links, as Markdown in text_md",
     "comments": "for channels: also dump the comments under posts",
     "bio": "the bio of everyone who wrote in the chat: a request per person, so slow for a big chat",
+    "who": "who reacted to each message and who voted in polls: a request per message with reactions",
     "files": "download the photos, videos, voice messages and documents, within the limits on size and type",
     "takeout": "Telegram's export mode, about 10x faster (allow it once in the Telegram app)",
     "html": "index.html in the chat folder to read the dump in a browser, offline",

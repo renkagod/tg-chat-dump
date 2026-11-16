@@ -165,15 +165,30 @@ def text_line(m):
         under.append(f"restricted on {r.get('platform')}: {r.get('text') or r.get('reason')}")
     for e in m.get("edits", []):
         under.append(f"until {stamp(e['replaced'])}: {e['text'] or ''}")
+    if m.get("reacted"):
+        under.append("reacted: " + names_by(m["reacted"], "reaction", " "))
+    if m.get("voted"):
+        answers = [a["text"] for a in (poll or {}).get("answers", [])]
+        under.append("voted: " + names_by(m["voted"], "option", ": ", answers))
     line = f"{head}: {body}" + (f"  [{' · '.join(meta)}]" if meta else "")
     return line + "".join(f"\n  [{u}]" for u in under) + "\n"
 
 
-def message_dict(cols, row, edits=None, files=None):
+def names_by(people, key, gap, titles=()):
+    """Who reacted or voted as text: the names under each reaction or answer, in the order they did it."""
+    found = {}
+    for p in people:
+        found.setdefault(p[key], []).append(p["name"] or str(p["user_id"]))
+    shown = ((titles[k] if isinstance(k, int) and k < len(titles) else k, v) for k, v in found.items())
+    return " · ".join(f"{k}{gap}{', '.join(v)}" for k, v in shown)
+
+
+def message_dict(cols, row, edits=None, files=None, who=None):
     """A database row as an export record: JSON columns decoded, empty optional fields left out.
 
     edits: {message id: its earlier texts}, see earlier_texts. files: {message id: its downloaded
-    file}, added to extra.file, so the path of a file is where its name and size are.
+    file}, added to extra.file, so the path of a file is where its name and size are. who: who reacted
+    and who voted, see who_said.
     """
     m = dict(zip(cols, row, strict=True))
     for c in JSON_COLUMNS:
@@ -185,6 +200,9 @@ def message_dict(cols, row, edits=None, files=None):
     if files and m["id"] in files:
         extra = m["extra"] = m.get("extra") or {}
         extra["file"] = {**files[m["id"]], **extra.get("file", {})}
+    for key, found in zip(("reacted", "voted"), who or (), strict=False):
+        if m["id"] in found:
+            m[key] = found[m["id"]]
     return m
 
 
@@ -194,6 +212,24 @@ def earlier_texts(db):
     for mid, date, text, replaced in db.execute("SELECT id, date, text, replaced FROM edits ORDER BY id, date"):
         found.setdefault(mid, []).append({"date": date, "text": text, "replaced": replaced})
     return found
+
+
+def who_said(db):
+    """({message id: who reacted to it}, {message id: who voted in its poll}), what the "who" extra found.
+
+    Each is a list of {user_id, name, reaction or option, date}; option is the answer's place in the poll.
+    """
+    found = []
+    for table, key in (("reacted", "reaction"), ("voted", "option")):
+        by = {}
+        rows = db.execute(
+            f"SELECT w.id, w.user_id, u.name, w.{key}, w.date FROM {table} w LEFT JOIN users u ON u.id = w.user_id "
+            f"ORDER BY w.id, w.{key}, w.date, w.user_id"
+        )
+        for mid, uid, name, what, date in rows:
+            by.setdefault(mid, []).append({"user_id": uid, "name": name, key: what, "date": date})
+        found.append(by)
+    return tuple(found)
 
 
 def write_about(db, out):
@@ -288,7 +324,7 @@ def export(
         saved = [t for (t,) in db.execute("SELECT DISTINCT topic_id FROM messages WHERE id <= ?", (since,))]
         if not all(((out if t is None else topic_folder(out, t, titles)) / "messages.csv").is_file() for t in saved):
             since = None
-    edits, files = earlier_texts(db), saved_files(db)
+    edits, files, who = earlier_texts(db), saved_files(db), who_said(db)
     # topic -> its oldest message that changed in place since the last export
     changed = dict(
         db.execute(
@@ -325,7 +361,7 @@ def export(
                     table.writerow(CSV_COLUMNS)
             current = None
             for r in db.execute(f"SELECT * FROM messages {where} ORDER BY {order}", params):
-                m = message_dict(cols, r, edits, files)
+                m = message_dict(cols, r, edits, files, who)
                 if threads:
                     m["thread"] = m["reply_top"] or m["reply_to"] or m["id"]
                     if m["thread"] != current:
@@ -338,7 +374,8 @@ def export(
                     table.writerow(csv_row(m))
     if "tdesktop" in formats and (groups or not (out / "result.json").exists()):
         out.mkdir(parents=True, exist_ok=True)
-        every = (message_dict(cols, r, edits, files) for r in db.execute("SELECT * FROM messages ORDER BY id"))
+        rows = db.execute("SELECT * FROM messages ORDER BY id")
+        every = (message_dict(cols, r, edits, files, who) for r in rows)
         write_result(db, out, chat_title, every, titles, threads)
     max_id, rows = db.execute("SELECT MAX(id), COUNT(*) FROM messages").fetchone()
     db.execute("INSERT OR REPLACE INTO exports VALUES(?, ?, ?, ?)", (str(out), max_id or 0, rows, fingerprint))

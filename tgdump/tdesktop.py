@@ -145,8 +145,12 @@ def media_fields(m, extra, folder):
     return {}
 
 
-def reaction_list(reactions):
-    out = []
+def reaction_list(reactions, reacted=()):
+    """Reactions as Telegram Desktop lists them; `recent` names who put each, when the dump knows it."""
+    out, who = [], {}
+    for r in reacted:
+        one = {"from": r["name"], "from_id": peer_tag(r["user_id"]), "date": stamps("date", r["date"])["date"]}
+        who.setdefault(r["reaction"], []).append(one)
     for key, count in (reactions or {}).items():
         if key.startswith("custom:"):
             out.append({"type": "custom_emoji", "count": count, "document_id": key.removeprefix("custom:")})
@@ -154,6 +158,8 @@ def reaction_list(reactions):
             out.append({"type": "paid", "count": count})
         else:
             out.append({"type": "emoji", "count": count, "emoji": key})
+        if key in who:
+            out[-1]["recent"] = who[key]
     return out
 
 
@@ -221,7 +227,7 @@ def desktop_message(m, folder=""):
     mixed = [e["text"] if e["type"] == "plain" else e for e in out["text_entities"]]
     out["text"] = text if all(isinstance(e, str) for e in mixed) else mixed
     if m.get("reactions"):
-        out["reactions"] = reaction_list(m["reactions"])
+        out["reactions"] = reaction_list(m["reactions"], m.get("reacted", ()))
     return {k: v for k, v in out.items() if v is not None}
 
 
