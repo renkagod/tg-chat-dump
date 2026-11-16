@@ -18,9 +18,46 @@ from .config import DATA, load_settings, parse_proxy
 log = logging.getLogger("dump")
 
 
+class Busy(Exception):
+    """Another run is using the accounts."""
+
+
+HELD = None  # the lock file, open while this run uses the accounts
+
+
+def hold_accounts():
+    """Make sure this is the only run using the accounts.
+
+    Two runs at once would lock each other out of the session files halfway through, so the second one stops
+    before it starts. The system lets go of the lock when the run ends, however it ends.
+    """
+    global HELD
+    if HELD:
+        return
+    DATA.mkdir(parents=True, exist_ok=True)
+    f = open(DATA / "accounts.lock", "a+b")  # noqa: SIM115 - kept open for as long as the run lasts
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+
+            f.seek(0)
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        raise Busy(
+            "Another tg-chat-dump run is using the accounts. Two at once would lock each other out of the session "
+            "files: wait for it to end, or stop it, and run again."
+        ) from None
+    HELD = f
+
+
 def make_client(name):
     s = load_settings()
-    DATA.mkdir(parents=True, exist_ok=True)
+    hold_accounts()
     return TelegramClient(
         str(DATA / name),
         int(s["TG_API_ID"]),

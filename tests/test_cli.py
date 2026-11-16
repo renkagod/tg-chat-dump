@@ -91,3 +91,39 @@ def test_several_chats_are_picked_from_the_search_at_once(monkeypatch, capsys):
     assert pick() == ("update", [items[0], items[2]])
     assert pick() == items[1]  # 9 is not on the list: said so, asked again
     assert "Pick numbers from 1 to 3." in capsys.readouterr().out
+
+
+def test_a_second_run_stops_while_another_uses_the_accounts(tmp_path, monkeypatch, caplog):
+    import subprocess
+
+    from tgdump import accounts
+
+    monkeypatch.setattr(accounts, "DATA", tmp_path)
+    monkeypatch.setattr(accounts, "HELD", None)
+    accounts.hold_accounts()
+    held = accounts.HELD
+    accounts.hold_accounts()  # asked again by the same run: it already holds them
+    assert accounts.HELD is held
+    second = (
+        "import pathlib, sys\nfrom tgdump import accounts\n"
+        "accounts.DATA = pathlib.Path(sys.argv[1])\naccounts.hold_accounts()\nprint('started')"
+    )
+
+    def another_run():
+        return subprocess.run([sys.executable, "-c", second, str(tmp_path)], capture_output=True, text=True)
+
+    busy = another_run()
+    assert busy.returncode != 0 and "Another tg-chat-dump run is using the accounts" in busy.stderr
+    held.close()  # the first run ends
+    assert another_run().stdout.strip() == "started"
+
+    # the command line says so in a line, in the log too, and exits with 1
+    async def main():
+        raise accounts.Busy("Another run is using the accounts")
+
+    monkeypatch.setattr(cli, "main", main)
+    monkeypatch.setattr(cli, "setup_logging", lambda console=True: None)
+    monkeypatch.setattr(sys, "argv", ["tg-chat-dump", "@one"])
+    with caplog.at_level("INFO", logger="dump"), pytest.raises(SystemExit) as stopped:
+        cli.run()
+    assert stopped.value.code == 1 and "Another run is using the accounts" in caplog.text

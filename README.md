@@ -362,6 +362,7 @@ The raw data is in `data/<chat id>.sqlite`, with tables `messages`, `topics`, `u
 - The reader does not play animated stickers in Telegram's own format (`.tgs`); the files are saved.
 - The account only sees what Telegram shows it: if the chat hides history from new members, older messages are not available.
 - People are saved when they have written in the chat, and with the `who` extra when they reacted or voted; the list of members is not downloaded.
+- One run at a time uses the accounts. A second run started meanwhile, a scheduled one included, says so and stops at once; run it again when the first one ends. `--search` and `--import` do not use the accounts and run any time.
 
 ## Responsible use
 

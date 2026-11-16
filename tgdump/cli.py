@@ -10,7 +10,7 @@ from pathlib import Path
 from telethon import errors, utils
 
 from . import interactive
-from .accounts import find_account, login, make_client, open_accounts, resolve
+from .accounts import Busy, find_account, login, make_client, open_accounts, resolve
 from .config import DATA, OPTIONS, ensure_api_keys, load_settings, parse_options, save_settings
 from .export import export_db
 from .fetch import RECHECK_DAYS, Takeouts, dump_chat, saved_dumps
@@ -296,6 +296,11 @@ def run():
         log.info("Stopped, progress is saved")
         if interactive_mode:
             print("\nStopped, progress is saved." if interactive.dumped else "\nBye.")
+    except Busy as e:
+        log.warning(e)  # also into dump.log, for a scheduled run that has no console
+        if interactive_mode:
+            print(f"\n{e}")
+        raise SystemExit(1) from None
     except Exception:
         log.exception("Crashed")
         raise
