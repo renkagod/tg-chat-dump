@@ -54,8 +54,8 @@ def chat_title(db, folder, chat_id):
 def is_chat(db, folder, chat_id, ref):
     """Whether the saved chat is the one named: by id, @username, t.me link or a part of its title."""
     ref = str(ref).strip()
-    if ref.lstrip("-").isdigit():
-        return str(chat_id) in (ref.lstrip("-"), ref.lstrip("-").removeprefix("100"))
+    if ref.lstrip("-").isdigit():  # -100 marks a channel or supergroup in Telegram's full form of the id
+        return str(chat_id) == (ref.removeprefix("-100") if ref.startswith("-100") else ref.lstrip("-"))
     name = ref.rstrip("/").rsplit("/", 1)[-1].lstrip("@").casefold()
     username = None
     with contextlib.suppress(sqlite3.Error):

@@ -1,6 +1,7 @@
 """--search: looking for words in every saved dump."""
 
 import os
+import sqlite3
 
 import pytest
 from telethon import types
@@ -133,3 +134,10 @@ def test_the_interactive_prompt_searches_after_a_question_mark(dumps, monkeypatc
 def test_nothing_to_search_for_is_refused(dumps):
     with pytest.raises(ValueError, match="nothing to search"):
         found("  ")
+
+
+def test_a_chat_is_named_by_its_id_in_either_form():
+    plain = sqlite3.connect(":memory:")
+    assert search.is_chat(plain, None, 5640892, "-1005640892") and search.is_chat(plain, None, 5640892, "5640892")
+    assert not search.is_chat(plain, None, 5640892, "1005640892")  # another chat's own id, not a full form
+    assert search.is_chat(plain, None, 1005640892, "1005640892")
