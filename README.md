@@ -256,7 +256,7 @@ uv run dump.py --schedule          # show what is set
 uv run dump.py --schedule off      # remove it
 ```
 
-On Windows it is a task in Task Scheduler, "tg-chat-dump update": it runs under your account while you are logged in, without a window, and a run missed because the computer was off starts when it is on again. On Linux and macOS it is a line in your crontab. The run is this very installation with its saved settings (the extras, the output folder), and it writes to `dump.log` in the data folder like any other run; past 10 MB the log is started anew and the old one is kept as `dump.log.1`. In the interactive mode the schedule is `s` in the settings.
+On Windows it is a task in Task Scheduler, "tg-chat-dump update": it runs under your account while you are logged in, without a window, and a run missed because the computer was off starts when it is on again. If Windows answers "Access is denied", run the command once from a terminal opened as administrator: some computers let only an elevated shell make tasks, and the task still runs under your account. On Linux and macOS it is a line in your crontab. The run is this very installation with its saved settings (the extras, the output folder), and it writes to `dump.log` in the data folder like any other run; past 10 MB the log is started anew and the old one is kept as `dump.log.1`. In the interactive mode the schedule is `s` in the settings.
 
 ### More accounts, more speed
 

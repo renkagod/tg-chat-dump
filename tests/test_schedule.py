@@ -158,7 +158,7 @@ def test_what_goes_wrong_is_said(linux, windows):
     def refuses(args, **kw):
         return done(1, err="ERROR: Access is denied.")
 
-    with pytest.raises(OSError, match="Access is denied"):
+    with pytest.raises(OSError, match="Access is denied.*as administrator"):
         schedule.schedule(When(4, 30), refuses)
 
     def missing(args, **kw):

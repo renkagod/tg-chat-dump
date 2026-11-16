@@ -176,6 +176,9 @@ def schedule(when, run=subprocess.run):
             done = call(["schtasks", "/Create", "/TN", NAME, "/XML", str(path), "/F"], run=run)
         if done.returncode:
             why = done.stderr.strip() or done.stdout.strip() or "no reason given"
+            if "denied" in why.lower():
+                # some computers let only an elevated shell make tasks, even for the user's own account
+                why += " Run it once from a terminal opened as administrator; the task still runs as you."
             raise OSError(f"Task Scheduler refused the task: {why}")
         return
     listed = call(["crontab", "-l"], run=run)
