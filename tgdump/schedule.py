@@ -47,6 +47,8 @@ TASK = """<?xml version="1.0" encoding="UTF-16"?>
   </Actions>
 </Task>
 """
+# what a scheduled run with a home of its own starts: TG_HOME is set before tgdump reads it
+HOME_RUN = "import os, sys; os.environ['TG_HOME'] = sys.argv.pop(1); from tgdump.cli import run; run()"
 REPEAT = """
       <Repetition>
         <Interval>PT{hours}H</Interval>
@@ -111,10 +113,10 @@ def cron_when(line):
 
 def task_xml(when, run):
     exe, *args = run
+    if home := os.getenv("TG_HOME"):
+        # a task has no environment of its own to keep it in; cmd.exe could set it, but would show a window
+        args = ["-c", HOME_RUN, home, *args[2:]]
     arguments = subprocess.list2cmdline(args)
-    if os.getenv("TG_HOME"):  # a task has no environment of its own to keep it in
-        inner = f'set "TG_HOME={os.environ["TG_HOME"]}" && {subprocess.list2cmdline(run)}'
-        exe, arguments = os.environ.get("COMSPEC", "cmd.exe"), f'/c "{inner}"'
     repeat = REPEAT.format(hours=when.every) if when.every else ""
     # the task belongs to the one who sets it, and runs while they are logged in: no password is asked or kept
     name = "\\".join(filter(None, (os.getenv("USERDOMAIN"), os.getenv("USERNAME"))))
@@ -192,6 +194,7 @@ def schedule(when, run=subprocess.run):
 def apply(text, run=subprocess.run, write=print):
     """What --schedule does: set the schedule, show it (no value), or take it away (off)."""
     try:
+        text = text.strip().lower() if text else text
         if text in ("off", "none", "no"):
             write("The schedule is removed." if remove(run) else "There was no schedule.")
         elif text in (None, "", "show"):

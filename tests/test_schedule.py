@@ -135,11 +135,19 @@ def test_windows_gets_a_task_that_catches_up_and_shows_no_window(windows):
 
 def test_windows_task_carries_a_home_of_its_own(windows, monkeypatch):
     monkeypatch.setenv("TG_HOME", r"D:\My dumps & more")
-    monkeypatch.setenv("COMSPEC", r"C:\Windows\System32\cmd.exe")
     tasks = Tasks()
     said("hourly", tasks)
-    assert r"<Command>C:\Windows\System32\cmd.exe</Command>" in tasks.xml
-    assert 'set "TG_HOME=D:\\My dumps &amp; more" &amp;&amp; ' in tasks.xml and "--update-all" in tasks.xml
+    assert f"<Command>{windows / 'pythonw.exe'}</Command>" in tasks.xml  # not cmd.exe, which shows a window
+    assert '"D:\\My dumps &amp; more" --update-all</Arguments>' in tasks.xml
+    assert said("OFF", tasks) == "The schedule is removed."  # in any case
+
+
+def test_the_home_reaches_the_scheduled_run(tmp_path):
+    home = tmp_path / "my dumps"
+    shown = "import os; print(os.environ['TG_HOME'], sys.argv[1:])"
+    code = schedule.HOME_RUN.replace("from tgdump.cli import run; run()", shown)
+    done = subprocess.run([sys.executable, "-c", code, str(home), "--update-all"], capture_output=True, text=True)
+    assert done.stdout.strip() == f"{home} ['--update-all']"
 
 
 def test_the_log_of_many_runs_is_started_anew_when_it_has_grown(tmp_path):
