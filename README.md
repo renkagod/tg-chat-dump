@@ -175,6 +175,8 @@ Files come after the messages are saved and exported, the newest first, and each
 
 Filters narrow it down: `--type photos --with files` downloads the photos of a chat into the filtered folder and nothing else, and `--topics 12 --with files` the files of one topic. With several accounts each takes its share. Unlike messages, files take as long as your connection needs: a chat with tens of thousands of photos is several gigabytes.
 
+Files are decrypted by [cryptg](https://pypi.org/project/cryptg/), which is installed with tg-chat-dump on Windows, Linux on x86-64 and ARM, and Macs with Apple silicon. Elsewhere, such as an Intel Mac, it is left out, and files come at about 0.5 MB/s instead of several MB/s; `pip install cryptg` there (it needs Rust) brings the speed back.
+
 A web page sent to the chat (`.html`, `.svg`) is saved like any other file, but the reader does not link to it: opened from the folder of the dump, a page could read the dump.
 
 ## Search

@@ -3,6 +3,7 @@
 import asyncio
 import collections
 import contextlib
+import importlib.util
 import logging
 import mimetypes
 import os
@@ -184,6 +185,11 @@ async def download_files(pairs, db, out, limits, when, stats, topics=None, threa
         return 0
     known = sum(size or 0 for _, _, size in todo)
     log.info(f"Files: {len(todo)} to download ({limits}){f', {size_text(known)} or more' if known else ''}")
+    if importlib.util.find_spec("cryptg") is None:  # not built for this system, see pyproject.toml
+        log.info(
+            "Files come at about 0.5 MB/s without cryptg; `pip install cryptg` (it needs Rust here) "
+            "makes them about 10x faster"
+        )
     total, done, loaded, weight = len(todo), 0, 0, 0
     stats.update(phase="files", files=(0, total, 0))
     batches = collections.deque(todo[n : n + PER_REQUEST] for n in range(0, total, PER_REQUEST))

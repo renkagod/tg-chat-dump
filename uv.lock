@@ -226,7 +226,7 @@ name = "tg-chat-dump"
 version = "1.8.1"
 source = { editable = "." }
 dependencies = [
-    { name = "cryptg" },
+    { name = "cryptg", marker = "(platform_machine == 'arm64' and platform_python_implementation == 'CPython' and sys_platform == 'darwin') or (platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (platform_machine == 'x86_64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (platform_machine != 'ARM64' and platform_python_implementation == 'CPython' and sys_platform == 'win32')" },
     { name = "prompt-toolkit" },
     { name = "python-dotenv" },
     { name = "python-socks" },
@@ -242,7 +242,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cryptg", specifier = ">=0.6.1" },
+    { name = "cryptg", marker = "(platform_machine == 'arm64' and platform_python_implementation == 'CPython' and sys_platform == 'darwin') or (platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (platform_machine == 'x86_64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (platform_machine != 'ARM64' and platform_python_implementation == 'CPython' and sys_platform == 'win32')", specifier = ">=0.6.1" },
     { name = "prompt-toolkit", specifier = ">=3.0.53" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "python-socks", extras = ["asyncio"], specifier = ">=2.4" },

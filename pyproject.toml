@@ -22,7 +22,9 @@ dependencies = [
     "python-socks[asyncio]>=2.4",
     "prompt-toolkit>=3.0.53",
     "qrcode>=7.4",
-    "cryptg>=0.6.1",
+    # decrypts what Telegram sends ~1000x faster than Telethon's own Python code; only where it comes built,
+    # elsewhere it would need Rust to install, and the dump works without it, files only slower
+    "cryptg>=0.6.1; platform_python_implementation == 'CPython' and ((sys_platform == 'win32' and platform_machine != 'ARM64') or (sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'linux' and (platform_machine == 'x86_64' or platform_machine == 'aarch64')))",
 ]
 
 [project.scripts]
