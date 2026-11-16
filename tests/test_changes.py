@@ -571,12 +571,18 @@ def test_a_chat_from_the_dialogs_is_not_asked_for_again(home):
     async def unknown(peer):
         raise ValueError("never met")
 
-    tg.get_entity, stranger.get_entity, stranger.get_dialogs = asked, unknown, asked
+    tg.get_entity, stranger.get_entity, stranger.get_dialogs, stranger.get_me = asked, unknown, asked, asked
     asyncio.run(fetch.dump_chat([tg], 7, seen={tg: tg.entity}))
     assert (home / "7.sqlite").exists()
     # an account whose dialogs do not have the chat looks it up once, without reading its dialogs again
+    # and is named in the warning without asking Telegram who it is: that request may have to wait by then
     with pytest.raises(ValueError, match="None of the accounts"):
         asyncio.run(fetch.dump_chat([stranger], 7, seen={stranger: None}))
+    from tgdump.accounts import account_name, who_is
+
+    assert account_name(stranger) == "an account"
+    asyncio.run(who_is(tg))
+    assert account_name(tg) == "Me"
 
 
 def test_the_extras_run_together_and_the_chat_is_exported_once_more(home, monkeypatch):

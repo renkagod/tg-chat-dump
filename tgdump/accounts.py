@@ -96,11 +96,29 @@ async def resolve(client, chat, listed=False):
     raise ValueError(f"Cannot find {chat}")
 
 
+NAMES = {}  # client -> the account's name, as Telegram told it in this run
+
+
+async def who_is(client):
+    """The account itself, as Telegram tells it; its name is kept for account_name."""
+    me = await client.get_me()
+    NAMES[client] = utils.get_display_name(me)
+    return me
+
+
+def account_name(client):
+    """The account's name for a message, without asking Telegram: that request is limited, and a run that
+    has asked about many people would wait for it. Its session file names it when it was not asked about.
+    """
+    filename = getattr(client.session, "filename", None)
+    return NAMES.get(client) or (f"the account {Path(filename).stem}" if filename else "an account")
+
+
 async def find_account(clients, ref):
     """The client named by its session file (as in --login), @username or user id."""
     ref = str(ref).lstrip("@").lower()
     for c in clients:
-        me = await c.get_me()
+        me = await who_is(c)
         if ref in {Path(c.session.filename).stem.lower(), str(me.id), (me.username or "").lower()}:
             return c
     raise ValueError(f"no logged-in account matches {ref!r}")

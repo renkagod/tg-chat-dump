@@ -23,7 +23,7 @@ from telethon import errors, functions, utils
 from telethon.tl.types import Channel, Chat, User
 
 from . import schedule, style
-from .accounts import login, make_client, new_session_name, open_accounts
+from .accounts import login, make_client, new_session_name, open_accounts, who_is
 from .chatinfo import chat_kind
 from .config import DATA, OPTIONS, ensure_api_keys, load_settings, out_dir, save_options, save_settings, saved_options
 from .fetch import Takeouts, dump_chat, saved_by, saved_dumps
@@ -807,7 +807,7 @@ async def main():
         print(paint(f"! {p}", "yellow"))
     if any("frozen by Telegram" not in p for p in problems):
         print(paint("  (check TG_PROXY in .env if Telegram is blocked in your network)", "dim"))
-    accounts = list(zip(clients, await asyncio.gather(*(c.get_me() for c in clients)), strict=True))
+    accounts = list(zip(clients, await asyncio.gather(*(who_is(c) for c in clients)), strict=True))
     try:
         if not accounts and not await first_account(accounts):
             return

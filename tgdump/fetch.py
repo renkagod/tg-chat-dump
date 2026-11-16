@@ -15,7 +15,7 @@ from telethon.tl.functions import InvokeWithTakeoutRequest
 from telethon.tl.functions.users import GetUsersRequest
 from telethon.tl.types import Channel, InputUserSelf, PeerChannel
 
-from .accounts import resolve
+from .accounts import account_name, resolve
 from .changes import Changes, apply_changes, channel_changes
 from .chatinfo import add_photo, chat_info, fetch_bios, fetch_topics, pinned_ids, refresh_users
 from .config import DATA
@@ -363,7 +363,7 @@ async def dump_chat(
     found = await asyncio.gather(*(find(c) for c in clients), return_exceptions=True)
     for c, e in zip(clients, found, strict=True):
         if isinstance(e, ValueError | TypeError):
-            log.warning(f"{utils.get_display_name(await c.get_me())} cannot see this chat, skipping")
+            log.warning(f"{account_name(c)} cannot see this chat, skipping")
         elif isinstance(e, BaseException):
             raise e
         else:
