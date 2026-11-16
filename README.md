@@ -114,7 +114,7 @@ Dump it with 2 accounts, extras: takeout, html? [Y/n, f = filters]
 | `csv` | `messages.csv` in every topic folder, a row per message, for a spreadsheet (see [Other formats](#other-formats)) | none |
 | `tdesktop` | `result.json` in the chat folder: the whole chat in the format of Telegram Desktop's own export, for the programs that read it (see [Other formats](#other-formats)) | the file is written whole on every run that found something new: about 3 seconds per hundred thousand messages |
 
-`bio`, `who` and `files` run at the same time: each asks Telegram for a thing of its own, which it limits apart, so together they take about as long as the slowest of them.
+`bio`, `who` and `files` run at the same time: each asks Telegram for a thing of its own, which it limits apart, so together they take about as long as the slowest of them. How much time each extra adds to a dump is in [What the extras add](#what-the-extras-add).
 
 Turning an extra on later does not touch messages that are already saved. A new run adds it to new messages only; `--refetch` adds it to the saved ones too, and asks for the bios again. `files` and `who` are the exceptions: they cover the saved messages from the start (`who` those whose reaction counts are saved). Polls and checklists are always saved now; the old `polls` extra is still accepted and does nothing.
 
@@ -286,6 +286,26 @@ Measured on a large forum supergroup (several hundred thousand messages):
 The Telegram Desktop row comes from a separate side-by-side test on one 420,912-message public group, text only: Telegram Desktop exported ~29,000 messages/min and tg-chat-dump with `takeout` ~110,000. Its full-dump time in the table is extrapolated from that rate.
 
 Telegram's per-account rate limit sets the ceiling: about 6,000 messages/min without takeout and about 60,000 with it. More than 3 workers per account does not help (3, 6 and 12 measured the same), and with many more Telegram adds flood waits. Turning on `takeout` gives the biggest jump; after that, more speed comes only from more accounts.
+
+The flood waits along the way cost nothing. Telegram lets an account through at a fixed average rate and sends it to wait once it is ahead, so the waits only give back what the bursts before them took. The same 450,000-message group took 3m 53s as it is, with 30 waits of 10–14 seconds, and just as long with the requests paced to stay under the limit, 10 a second per account, when only 2 waits were left.
+
+#### What the extras add
+
+A 450,000-message group takes about 4 minutes with two accounts and `takeout`. Each extra adds roughly this:
+
+| Extra | Adds | Grows with |
+|---|---|---|
+| `meta`, `markdown` | nothing: it comes with the messages | |
+| `csv` | ~0.4 s per 100,000 messages | messages |
+| `html` | ~0.6 s per 100,000 messages | messages |
+| `tdesktop` | ~3 s per 100,000 messages, on every run that finds something new | messages |
+| `comments` | a dump of the discussion group, at the same speed | its messages |
+| `who` | ~20 messages a second with two accounts: 40,000 messages with reactions take about 35 minutes | messages with reactions |
+| `bio` | ~100 people a minute with two accounts: 5,000 authors take about 50 minutes | authors |
+| `files` | the download: ~5 MB/s through a proxy in our tests, so about 3–4 minutes per GB | the size of the files |
+| no `takeout` | the dump runs ~10× slower: about 40 minutes for the same group | messages |
+
+`bio`, `who` and `files` run at the same time, so with several of them on, the run is about as long as the slowest one. The messages are saved and exported before they start: stop a long run and the messages are all there, and the next run goes on with what is left.
 
 ## Output
 
