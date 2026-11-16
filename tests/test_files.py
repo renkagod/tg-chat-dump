@@ -301,12 +301,12 @@ def test_a_stopped_download_leaves_no_half_of_a_file(home):
     def stopped(file, dc_id=None, file_size=None):
         async def chunks():
             yield b"half"
-            raise KeyboardInterrupt
+            raise asyncio.CancelledError  # what Ctrl+C is inside a run
 
         return chunks()
 
     tg.iter_download = stopped
-    with pytest.raises(KeyboardInterrupt):
+    with pytest.raises(asyncio.CancelledError):
         run(tg, options=FILES)
     assert on_disk(home / OUT) == [] and saved(home) == []
     assert 1 in records(home / OUT)  # the messages were exported before the files

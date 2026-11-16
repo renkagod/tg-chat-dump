@@ -244,21 +244,27 @@ def saved_dumps():
     for p in DATA.glob("*.sqlite"):
         if not p.stem.isdigit():
             continue  # filtered dumps have a suffix
-        exports = []
+        exports, imported = [], False
         with contextlib.suppress(sqlite3.Error), contextlib.closing(sqlite3.connect(p)) as db:
             exports = db.execute("SELECT folder, rows FROM exports").fetchall()
+            # read from an export and never downloaded: there may be no chat left to update
+            imported = db.execute(
+                "SELECT 1 FROM state WHERE key = 'imported' AND NOT EXISTS (SELECT 1 FROM tasks)"
+            ).fetchone()
+        if imported:
+            continue
         if all(Path(f).name == "comments" for f, _ in exports):
             continue  # a channel's discussion group, updated with the channel; or never exported, before 1.1.4
         found.append((int(p.stem), p.stat().st_mtime, max((r for _, r in exports), default=0)))
     return sorted(found, key=lambda d: -d[1])
 
 
-async def saved_by(client, entity, db):
+async def saved_by(client, entity, db, look=5):
     """Whether the stored messages came from this account: private chats number messages per account.
 
-    The newest stored ids are looked up; one of them with the same date is enough (others may be deleted).
+    The `look` newest stored ids are looked up; one of them with the same date is enough (others may be deleted).
     """
-    stored = db.execute("SELECT id, date FROM messages ORDER BY id DESC LIMIT 5").fetchall()
+    stored = db.execute("SELECT id, date FROM messages ORDER BY id DESC LIMIT ?", (look,)).fetchall()
     if not stored:
         return True
     found = await client.get_messages(entity, ids=[i for i, _ in stored])
@@ -376,7 +382,9 @@ async def dump_chat(
             found = await asyncio.to_thread(copy_scope, whole, db_path, scope, sender)
             log.info(f"Filters: {scope.tag()}, {found} messages taken from the saved dump of the whole chat")
             stats.update(stored=found, fetched=0, local=True)
-            export = functools.partial(export_db, db_path, entity.id, title, scope=scope, reader="html" in options)
+            export = functools.partial(
+                export_db, db_path, entity.id, title, scope=scope, reader="html" in options, formats=options
+            )
             out = await asyncio.to_thread(export, full=again)
             if "files" in options:
                 await save_files(pairs, db_path, out, files, now, stats, export, workers=workers)
@@ -396,7 +404,14 @@ async def dump_chat(
             log.info(f"Filters: {scope.tag()}")
 
         stats["phase"] = "planning"
-        if not isinstance(entity, Channel) and not await saved_by(client, entity, db):
+        imported = get_state(db, "imported")
+        # much of what came from an old export may be gone from Telegram, so more of it is looked up
+        if not isinstance(entity, Channel) and not await saved_by(client, entity, db, 100 if imported else 5):
+            if imported:  # it may hold messages that are nowhere else by now
+                raise ValueError(
+                    "The saved copy was read from an export that does not match this account's copy of the chat; "
+                    "it is left as it is"
+                )
             log.warning("The saved copy came from another account, downloading the chat again")
             clear(db)
         if again:
@@ -529,7 +544,15 @@ async def dump_chat(
 
     stats["phase"] = "exporting"
     export = functools.partial(
-        export_db, db_path, entity.id, title, scope=scope, folder=folder, threads=threads, reader="html" in options
+        export_db,
+        db_path,
+        entity.id,
+        title,
+        scope=scope,
+        folder=folder,
+        threads=threads,
+        reader="html" in options,
+        formats=options,
     )
     out = await asyncio.to_thread(export)
     if "bio" in options:

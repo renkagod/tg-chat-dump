@@ -1,5 +1,7 @@
 """Database -> per-topic folders with messages.jsonl and messages.txt."""
 
+import contextlib
+import csv
 import json
 import logging
 
@@ -7,6 +9,7 @@ from .config import out_dir
 from .reader import write_reader
 from .scope import NO_SCOPE
 from .store import BASE_COLUMNS, JSON_COLUMNS, TOPIC_NAMES, get_chat, open_db, saved_files
+from .tdesktop import write_result
 from .util import size_text, slug, topic_folder
 
 log = logging.getLogger("dump")
@@ -66,6 +69,35 @@ def media_text(extra):
     if i := extra.get("media_info"):
         return fields_text(i)
     return ""
+
+
+CSV_COLUMNS = (
+    "id",
+    "date",
+    "edit_date",
+    "topic_id",
+    "sender_id",
+    "sender",
+    "text",
+    "reply_to",
+    "fwd_from",
+    "media",
+    "file",
+    "action",
+    "views",
+    "forwards",
+    "replies",
+    "reactions",
+    "deleted_at",
+)
+
+
+def csv_row(m):
+    """A record as a row of messages.csv: the plain columns, the file's path or name, reactions as text."""
+    f = (m.get("extra") or {}).get("file") or {}
+    reactions = " ".join(f"{k} {v}" for k, v in (m.get("reactions") or {}).items())
+    values = {**m, "file": f.get("path") or f.get("name"), "reactions": reactions}
+    return [values.get(c) for c in CSV_COLUMNS]
 
 
 def stamp(date):
@@ -226,13 +258,23 @@ def appendable_since(db, out, titles):
 
 
 def export(
-    db, chat_id, chat_title, out_root=None, scope=NO_SCOPE, folder=None, threads=False, full=False, reader=False
+    db,
+    chat_id,
+    chat_title,
+    out_root=None,
+    scope=NO_SCOPE,
+    folder=None,
+    threads=False,
+    full=False,
+    reader=False,
+    formats=frozenset(),
 ):
     """Write <out>/<chat>/<topic id>_<title>/messages.jsonl and messages.txt.
 
     Later runs append only the new messages and rewrite the topics where saved ones were edited or deleted;
     full=True rewrites everything.
-    reader=True also writes index.html, the offline reader.
+    reader=True also writes index.html, the offline reader. formats: the extras that add files of their own,
+    "csv" a messages.csv next to the other two, "tdesktop" a result.json for the whole chat.
     With threads=True (a channel's discussion group) everything goes to one folder,
     ordered by thread, and each thread is headed by the channel post it belongs to.
     """
@@ -241,6 +283,11 @@ def export(
     fingerprint = json.dumps(sorted(titles.items()), ensure_ascii=False)
     cols = [c[1] for c in db.execute("PRAGMA table_info(messages)")]
     since = None if full or threads else appendable_since(db, out, titles)
+    if since is not None and "csv" in formats:
+        # the format was turned on after the folders were written: they are written whole once, to have it all
+        saved = [t for (t,) in db.execute("SELECT DISTINCT topic_id FROM messages WHERE id <= ?", (since,))]
+        if not all(((out if t is None else topic_folder(out, t, titles)) / "messages.csv").is_file() for t in saved):
+            since = None
     edits, files = earlier_texts(db), saved_files(db)
     # topic -> its oldest message that changed in place since the last export
     changed = dict(
@@ -267,7 +314,15 @@ def export(
         with (
             open(target / "messages.jsonl", mode, encoding="utf-8") as fj,
             open(target / "messages.txt", mode, encoding="utf-8") as ft,
+            contextlib.ExitStack() as more,
         ):
+            table = None
+            if "csv" in formats:
+                # with a byte order mark, which a spreadsheet needs to read the text as UTF-8
+                fc = more.enter_context(open(target / "messages.csv", mode, encoding="utf-8-sig", newline=""))
+                table = csv.writer(fc)
+                if fc.tell() == 0:
+                    table.writerow(CSV_COLUMNS)
             current = None
             for r in db.execute(f"SELECT * FROM messages {where} ORDER BY {order}", params):
                 m = message_dict(cols, r, edits, files)
@@ -279,6 +334,12 @@ def export(
                         ft.write(f"\n=== {f'post #{post}' if post else f'thread #{current}'} ===\n")
                 fj.write(to_json(m) + "\n")
                 ft.write(text_line(m))
+                if table:
+                    table.writerow(csv_row(m))
+    if "tdesktop" in formats and (groups or not (out / "result.json").exists()):
+        out.mkdir(parents=True, exist_ok=True)
+        every = (message_dict(cols, r, edits, files) for r in db.execute("SELECT * FROM messages ORDER BY id"))
+        write_result(db, out, chat_title, every, titles, threads)
     max_id, rows = db.execute("SELECT MAX(id), COUNT(*) FROM messages").fetchone()
     db.execute("INSERT OR REPLACE INTO exports VALUES(?, ?, ?, ?)", (str(out), max_id or 0, rows, fingerprint))
     if db.execute("SELECT 1 FROM changed LIMIT 1").fetchone():

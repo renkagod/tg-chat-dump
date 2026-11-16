@@ -31,6 +31,8 @@ OPTIONS = {
     "files": "download the photos, videos, voice messages and documents, within the limits on size and type",
     "takeout": "Telegram's export mode, about 10x faster (allow it once in the Telegram app)",
     "html": "index.html in the chat folder to read the dump in a browser, offline",
+    "csv": "messages.csv in every topic folder, for a spreadsheet",
+    "tdesktop": "result.json in the chat folder, in the format of Telegram Desktop's own export",
 }
 DEFAULT_OPTIONS = "takeout,html"  # when TG_OPTIONS is not set at all; "none" turns everything off
 RETIRED = {"polls"}  # always on now; still accepted, so older settings and commands keep working

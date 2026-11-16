@@ -14,6 +14,7 @@ from .config import DATA, OPTIONS, ensure_api_keys, load_settings, parse_options
 from .export import export_db
 from .fetch import RECHECK_DAYS, Takeouts, dump_chat, saved_dumps
 from .files import DEFAULT_SIZE, DEFAULT_TYPES, TYPES, file_limits
+from .imports import import_result
 from .scope import KINDS, Scope, parse_date
 from .util import parse_chat
 
@@ -78,6 +79,13 @@ def parse_args():
     p.add_argument("--out", metavar="DIR", help="output folder; it is saved to .env and used from now on")
     p.add_argument("--export-only", action="store_true", help="rebuild the output folders from the database")
     p.add_argument(
+        "--import",
+        dest="import_path",
+        metavar="PATH",
+        help="read an export made by Telegram Desktop (its result.json, or the folder it is in) into a dump: "
+        "no account is needed, and messages that are saved already stay as they are",
+    )
+    p.add_argument(
         "--refetch",
         action="store_true",
         help="download the saved messages again, to fill in what older versions did not keep (rich messages, "
@@ -94,7 +102,7 @@ def parse_args():
     p.add_argument("--login", metavar="NAME", help="log in one more account to data/NAME.session and exit")
     a = p.parse_args()
     a.chat = a.target or a.chat
-    if not a.chat and not a.login and not a.update_all:
+    if not a.chat and not a.login and not a.update_all and not a.import_path:
         p.error("name a chat (tg-chat-dump @somegroup), pass --update-all, or set TG_CHAT in .env")
     try:
         a.options = parse_options(a.options)
@@ -139,6 +147,16 @@ async def update_all(clients, workers, options, takeouts, again=False, recheck=R
 
 async def main():
     a = parse_args()
+    if a.import_path:  # nothing is asked of Telegram, so no keys and no account
+        if a.out:
+            save_settings({"TG_OUT": str(Path(a.out).expanduser().resolve())})
+        try:
+            found = import_result(a.import_path, reader="html" in a.options, formats=a.options)
+        except (OSError, ValueError, KeyError) as e:
+            raise SystemExit(f"Cannot read the export: {e}") from None
+        if not found:
+            raise SystemExit("The export has no chats with messages")
+        return
     ensure_api_keys()
     if a.out:
         save_settings({"TG_OUT": str(Path(a.out).expanduser().resolve())})
@@ -172,7 +190,9 @@ async def main():
             entity = await resolve(using[0], chat)
             db_path = DATA / f"{entity.id}{a.scope.db_suffix()}.sqlite"
             title = utils.get_display_name(entity)
-            export_db(db_path, entity.id, title, scope=a.scope, full=True, reader="html" in a.options)
+            export_db(
+                db_path, entity.id, title, scope=a.scope, full=True, reader="html" in a.options, formats=a.options
+            )
             return
         topics = [int(t) for t in a.topics.split(",")] if a.topics else None
         async with Takeouts() as takeouts:  # also covers a channel's comments, dumped right after it

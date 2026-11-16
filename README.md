@@ -38,6 +38,7 @@ out/1234567890_My_Chat/
 - The chat around the messages too: its description, picture, member count and settings, the icons and states of forum topics, pinned messages, and everyone who wrote, under their current name and username (see [The chat and its people](#the-chat-and-its-people)).
 - The files too, when asked: photos, videos, voice messages and documents, within limits on size and type, and shown in place by the reader (see [Files](#files)).
 - Optional extras, each a toggle: reactions and views, formatting with hidden links, comments under channel posts, people's bios, files, and Telegram's export mode (see [Extras](#extras)).
+- Other formats in and out: a CSV for spreadsheets, the JSON of Telegram Desktop's own export for the programs that read it, and an export made by Telegram Desktop read into a dump, which brings back messages deleted since (see [Other formats](#other-formats)).
 - Filters by date range, author or message type, such as links or documents.
 - On `FLOOD_WAIT` the run sleeps and then continues on its own.
 - SOCKS5 and HTTP proxies, for networks where Telegram is blocked.
@@ -105,6 +106,8 @@ Dump it with 2 accounts, extras: takeout, html? [Y/n, f = filters]
 | `files` | the photos, videos, voice messages, music and documents attached to the messages, in `files/` inside each topic folder, with the path in `extra.file.path` (see [Files](#files)) | the download itself: it takes what your connection needs for the files within the limits, and their size on disk |
 | `takeout` | runs the dump in Telegram's data-export mode, the one Telegram Desktop uses; it skips the usual rate limits, about 10× faster (see [Performance](#performance)) | the first time, Telegram asks you to allow the export in the app (the interactive mode waits for it), otherwise it opens after 24 hours; until then the dump runs at normal speed |
 | `html` | `index.html` in the chat folder: read the dump in a browser, offline, with topics, search, replies and jumps to a date | a few seconds on the first run for a chat of several hundred thousand messages, then a fraction of a second |
+| `csv` | `messages.csv` in every topic folder, a row per message, for a spreadsheet (see [Other formats](#other-formats)) | none |
+| `tdesktop` | `result.json` in the chat folder: the whole chat in the format of Telegram Desktop's own export, for the programs that read it (see [Other formats](#other-formats)) | the file is written whole on every run that found something new: about 3 seconds per hundred thousand messages |
 
 Turning an extra on later does not touch messages that are already saved. A new run adds it to new messages only; `--refetch` adds it to the saved ones too, and asks for the bios again. `files` is the exception: it covers the saved messages from the start. Polls and checklists are always saved now; the old `polls` extra is still accepted and does nothing.
 
@@ -158,6 +161,27 @@ Filters narrow it down: `--type photos --with files` downloads the photos of a c
 
 A web page sent to the chat (`.html`, `.svg`) is saved like any other file, but the reader does not link to it: opened from the folder of the dump, a page could read the dump.
 
+## Other formats
+
+Two extras write the dump in formats other programs read, next to the usual files.
+
+- **`csv`**: a `messages.csv` in every topic folder, a row per message, with the columns `id`, `date`, `edit_date`, `topic_id`, `sender_id`, `sender`, `text`, `reply_to`, `fwd_from`, `media`, `file`, `action`, `views`, `forwards`, `replies`, `reactions`, `deleted_at`. It opens in Excel, LibreOffice or Google Sheets as it is, Cyrillic and emoji included. Like the other files it grows by the new messages on a repeat run. Turned on for a chat dumped before, it is written for all the saved messages at once.
+- **`tdesktop`**: a `result.json` in the chat folder, the whole chat the way Telegram Desktop's own "Export chat history" writes it in JSON: the same field names, service messages, media and reactions, and the text with its formatting when the `markdown` extra saved it. Programs made for Telegram's exports, such as chat statistics, read it as they would read the real one. With the `files` extra the messages point at the downloaded files. It is written whole whenever something in the chat changed.
+
+It works the other way too. An export made by Telegram Desktop (*⋮ → Export chat history*, format JSON) is read into a dump, and no account is needed for that:
+
+```sh
+uv run dump.py --import "D:\Downloads\ChatExport_2024-05-01"   # the folder, or its result.json
+uv run dump.py --import result.json --with html,csv            # with the extras that write files
+```
+
+The chat gets its database and its folder like any other, with the reader, and the photos and files the export came with are copied into it. An export of the whole account (*Settings → Advanced → Export Telegram data*) is read chat by chat.
+
+- If the chat is dumped already, the export only adds the messages the dump does not have; the saved ones stay as they are. That brings back what was deleted from Telegram after an old export was made: import it, and those messages are in the dump again. `--refetch` then marks them as deleted, since it compares the whole chat with Telegram.
+- A chat that was only imported can be dumped afterwards like any other: the run downloads it from Telegram and keeps what only the export had. Until then `--update-all` leaves it alone.
+- Telegram's export does not say which forum topic a message is in. The topics are found by the replies: a message in a topic answers the topic's first message or another message of the topic. A reply to a message that is neither in the export nor in the dump cannot be placed and goes to General. In an export of a part of a forum, a missing message with six or more replies is taken for a topic's first one, and its folder is named by the id alone.
+- The export has less than a dump: no link previews, buttons, reply quotes or view counts. The file is read into memory whole, so an export of a million messages needs a few gigabytes of it.
+
 ## Command line
 
 With arguments it runs without questions, for scripts and cron. Settings come from `.env` (see `.env.example`). The examples use the source checkout; with the installed package, replace `uv run dump.py` with `tg-chat-dump`:
@@ -170,6 +194,8 @@ uv run dump.py --chat @somegroup --topics 12,37      # only these forum topics
 uv run dump.py --chat @somegroup --with meta,markdown   # with extras
 uv run dump.py --chat @somegroup --with files --file-size 50   # with files up to 50 MB, see above
 uv run dump.py --chat @somegroup --export-only       # rebuild the folders from the database, no network
+uv run dump.py --chat @somegroup --with csv,tdesktop   # also as a spreadsheet and as Telegram Desktop's JSON
+uv run dump.py --import "D:\Downloads\ChatExport"     # read an export made by Telegram Desktop, see above
 uv run dump.py --chat @somegroup --refetch           # download the saved messages again, see below
 uv run dump.py --chat @somegroup --recheck 7         # look for edits and deletions a week back, see above
 uv run dump.py --login acc2                          # add another account (see below)
@@ -272,7 +298,7 @@ uv run pytest
 uv run ruff check . && uv run ruff format --check .
 ```
 
-The code is in `tgdump/`: `fetch` downloads, `store` turns messages into database rows (with `details` for what goes into `extra` and `rich` for rich messages), `chatinfo` reads the chat's own details, topics, pins and people, `files` downloads what is attached to the messages, `export` writes the folders, `reader` the offline page, `cli` and `interactive` are the two front ends.
+The code is in `tgdump/`: `fetch` downloads, `store` turns messages into database rows (with `details` for what goes into `extra` and `rich` for rich messages), `chatinfo` reads the chat's own details, topics, pins and people, `files` downloads what is attached to the messages, `export` writes the folders, `reader` the offline page, `tdesktop` knows Telegram Desktop's export format and `imports` reads such an export into a dump, `cli` and `interactive` are the two front ends.
 
 Issues and pull requests are welcome. Please run the tests and linters before opening a PR.
 
