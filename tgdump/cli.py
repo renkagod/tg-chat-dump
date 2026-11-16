@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import contextlib
 import logging
 import sys
 from pathlib import Path
@@ -21,20 +22,27 @@ from .search import LIMIT, report
 from .util import parse_chat
 
 log = logging.getLogger("dump")
+LINE = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+LOG_LIMIT = 10_000_000  # bytes; past this dump.log is started anew, and the old one stays as dump.log.1
 
 
 def setup_logging(console=True):
     """Log to data/dump.log and, unless the interactive mode draws its own progress, to the console."""
     DATA.mkdir(parents=True, exist_ok=True)
-    handlers = [logging.FileHandler(DATA / "dump.log", encoding="utf-8")]
+    file = logging.FileHandler(fresh_log(DATA / "dump.log"), encoding="utf-8")
+    file.setFormatter(logging.Formatter(LINE, "%Y-%m-%d %H:%M:%S"))  # scheduled runs fill it day after day
+    handlers = [file]
     if console and sys.stderr is not None:  # a scheduled run has no console at all
         handlers.append(logging.StreamHandler())
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-        handlers=handlers,
-    )
+    logging.basicConfig(level=logging.INFO, format=LINE, datefmt="%H:%M:%S", handlers=handlers)
+
+
+def fresh_log(path, limit=LOG_LIMIT):
+    """The log to write to; one that has grown past the limit is put aside first."""
+    with contextlib.suppress(OSError):  # none yet, or another run has it open: then it grows a little more
+        if path.stat().st_size > limit:
+            path.replace(path.with_name(path.name + ".1"))
+    return path
 
 
 def parse_args():

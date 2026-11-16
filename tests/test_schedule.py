@@ -142,6 +142,18 @@ def test_windows_task_carries_a_home_of_its_own(windows, monkeypatch):
     assert 'set "TG_HOME=D:\\My dumps &amp; more" &amp;&amp; ' in tasks.xml and "--update-all" in tasks.xml
 
 
+def test_the_log_of_many_runs_is_started_anew_when_it_has_grown(tmp_path):
+    from tgdump.cli import fresh_log
+
+    path = tmp_path / "dump.log"
+    assert fresh_log(path) == path and not path.exists()  # the first run has none yet
+    path.write_text("a run\n" * 10, encoding="utf-8")
+    assert fresh_log(path, limit=1000) == path and path.exists()
+    (tmp_path / "dump.log.1").write_text("long ago\n", encoding="utf-8")
+    assert fresh_log(path, limit=20) == path and not path.exists()
+    assert (tmp_path / "dump.log.1").read_text(encoding="utf-8") == "a run\n" * 10  # one old log is kept
+
+
 def test_what_goes_wrong_is_said(linux, windows):
     def refuses(args, **kw):
         return done(1, err="ERROR: Access is denied.")
