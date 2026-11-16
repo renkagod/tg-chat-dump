@@ -310,3 +310,37 @@ def test_a_stopped_download_leaves_no_half_of_a_file(home):
         run(tg, options=FILES)
     assert on_disk(home / OUT) == [] and saved(home) == []
     assert 1 in records(home / OUT)  # the messages were exported before the files
+
+
+def test_a_dropped_connection_stops_every_account(tmp_path, monkeypatch):
+    monkeypatch.setattr("tgdump.files.PER_REQUEST", 1)  # a message per request: each account gets one
+    slow, broken, left = club_with_files(), club_with_files(), []
+
+    async def dropped(entity, ids=None, **kw):
+        raise ConnectionError("dropped")
+
+    def stuck(file, dc_id=None, file_size=None):
+        async def chunks():
+            try:
+                await asyncio.sleep(10)
+                yield b""
+            finally:
+                left.append(file.id)
+
+        return chunks()
+
+    broken.get_messages, slow.iter_download = dropped, stuck
+    db = open_db(tmp_path / "7.sqlite")
+    plan_full(db, 1, 5)
+    save(db, "range:0", [to_row(m, forum=False) for m in club_with_files().messages.values()], done=True)
+    limits = Limits(frozenset({"photo", None, "voice"}), 0)
+
+    async def go():
+        with pytest.raises(ConnectionError):
+            await download_files([(slow, slow.entity), (broken, broken.entity)], db, tmp_path / "out", limits, NOW, {})
+        return sorted(left)
+
+    assert (
+        len(asyncio.run(go())) == 1
+    )  # the other account's download was stopped before the error went on, not left writing to the database
+    db.close()

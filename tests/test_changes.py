@@ -530,3 +530,33 @@ def test_set_state_forgets_none():
     assert get_state(db, "pts") == 5
     set_state(db, "pts", None)
     assert get_state(db, "pts", "nothing") == "nothing"
+
+
+def test_a_worker_that_fails_stops_the_others(home):
+    slow, broken, left = Telegram([day(1, 0), day(2000, 0)]), Telegram([day(1, 0), day(2000, 0)]), []
+
+    def stuck(entity, offset_id=0, min_id=0, **kw):
+        async def walk():
+            try:
+                await asyncio.sleep(10)
+                yield day(1, 0)
+            finally:
+                left.append("stopped")
+
+        return walk()
+
+    def dropped(entity, **kw):
+        async def walk():
+            raise ConnectionError("dropped")
+            yield
+
+        return walk()
+
+    slow.iter_messages, broken.iter_messages = stuck, dropped
+
+    async def go():
+        with pytest.raises(ConnectionError):
+            await fetch.dump_chat([slow, broken], 7, workers=1)
+        return left
+
+    assert asyncio.run(go()) == ["stopped"]  # before the database was closed under it

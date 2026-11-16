@@ -44,7 +44,7 @@ from .store import (
     sync_pins,
     to_row,
 )
-from .util import fmt_duration, iso, parse_chat
+from .util import all_or_none, fmt_duration, iso, parse_chat
 from .who import fetch_who
 
 log = logging.getLogger("dump")
@@ -532,7 +532,7 @@ async def dump_chat(
         job = Job(db, forum, options, scope.iter_kwargs(), now, gone_at, firsts)
         helpers = [asyncio.create_task(report(progress, time.monotonic())), asyncio.create_task(mirror())]
         try:
-            await asyncio.gather(*(worker(queue, c, e, job, progress) for _ in range(workers) for c, e in pairs))
+            await all_or_none(worker(queue, c, e, job, progress) for _ in range(workers) for c, e in pairs)
         finally:
             for h in helpers:
                 h.cancel()

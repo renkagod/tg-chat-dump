@@ -13,7 +13,7 @@ from telethon import errors, types
 
 from .config import load_settings
 from .details import file_info
-from .util import size_text, topic_folder
+from .util import all_or_none, size_text, topic_folder
 
 log = logging.getLogger("dump")
 # --file-types -> what a saved message calls its file in extra.file.kind; a photo has no such entry,
@@ -247,7 +247,7 @@ async def download_files(pairs, db, out, limits, when, stats, topics=None, threa
                 missed[k].append(item)
             else:
                 jobs.append(one(m, item[1]))
-        await asyncio.gather(*jobs)
+        await all_or_none(jobs)
 
     async def account(k):
         while batches:
@@ -266,7 +266,7 @@ async def download_files(pairs, db, out, limits, when, stats, topics=None, threa
 
     progress = asyncio.create_task(report())
     try:
-        await asyncio.gather(*(account(k) for k in range(len(pairs))))
+        await all_or_none(account(k) for k in range(len(pairs)))
         # what an account could not see is passed on to the next one, until every account has been asked:
         # one of them may have joined the chat earlier
         for _ in pairs[1:]:
