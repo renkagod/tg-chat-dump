@@ -606,3 +606,9 @@ def test_the_extras_run_together_and_the_chat_is_exported_once_more(home, monkey
     monkeypatch.setattr(fetch, "export_db", lambda *a, **kw: exports.append(1) or real(*a, **kw))
     run(Telegram([day(1, 0)]), options=frozenset({"bio", "who", "files"}))
     assert len(exports) == 2  # the dump's own export, and one for the files the extras found
+
+
+def test_a_public_channel_left_out_of_the_dialogs_is_still_looked_up(home):
+    tg = Telegram([day(1, 0)])
+    asyncio.run(fetch.dump_chat([tg], types.PeerChannel(7), seen={tg: None}))
+    assert (home / "7.sqlite").exists()

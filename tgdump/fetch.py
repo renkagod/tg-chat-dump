@@ -356,8 +356,14 @@ async def dump_chat(
     pairs = []
 
     async def find(c):
-        if seen and c in seen:  # its dialogs were read: a chat not among them is looked up, not listed again
-            return seen[c] or await resolve(c, chat, listed=True)
+        if seen and c in seen:  # its dialogs were read
+            if seen[c] is not None:
+                return seen[c]
+            if not isinstance(chat, PeerChannel):
+                # a private chat or a basic group is in the dialogs of everyone who sees it; asking about the
+                # person would only wait for Telegram, which limits that request
+                raise ValueError("not among its chats")
+            return await resolve(c, chat, listed=True)  # a public channel it has not joined
         return await resolve(c, chat)
 
     found = await asyncio.gather(*(find(c) for c in clients), return_exceptions=True)
