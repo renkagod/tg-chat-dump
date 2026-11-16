@@ -327,6 +327,7 @@ async def dump_chat(
     recheck=RECHECK_DAYS,
     files=None,
     who=True,
+    seen=None,
 ):
     """Download a chat with every client that can see it, then export it.
 
@@ -339,6 +340,7 @@ async def dump_chat(
     who=False leaves the asking of the "who" extra to the caller: the reactions are counted, nobody is asked
     who put them.
     `takeouts` (a Takeouts) keeps export mode open for later dumps; without it, it is closed when this one ends.
+    `seen` ({client: the chat as its dialogs show it, or None}) spares asking Telegram for the chat again.
     `stats` (a dict) is updated in place for progress display: phase, label, total
     (approximate message count from Telegram), stored, fetched, accounts, and
     work_total/work_left (what is left to scan). Returns the export folder.
@@ -349,7 +351,13 @@ async def dump_chat(
     stats.setdefault("label", "")
     scope = scope.within(topics)
     pairs = []
-    found = await asyncio.gather(*(resolve(c, chat) for c in clients), return_exceptions=True)
+
+    async def find(c):
+        if seen and c in seen:  # its dialogs were read: a chat not among them is looked up, not listed again
+            return seen[c] or await resolve(c, chat, listed=True)
+        return await resolve(c, chat)
+
+    found = await asyncio.gather(*(find(c) for c in clients), return_exceptions=True)
     for c, e in zip(clients, found, strict=True):
         if isinstance(e, ValueError | TypeError):
             log.warning(f"{utils.get_display_name(await c.get_me())} cannot see this chat, skipping")

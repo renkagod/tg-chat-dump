@@ -83,10 +83,11 @@ async def frozen_until(client):
     return datetime.fromtimestamp(until.value, UTC) if until else None
 
 
-async def resolve(client, chat):
+async def resolve(client, chat, listed=False):
+    """The chat as this account sees it. listed=True: its dialogs were read in this run, no need to again."""
     # a bare positive id is a channel or group, otherwise a user
     targets = [PeerChannel(chat), PeerUser(chat)] if isinstance(chat, int) and chat > 0 else [chat]
-    for fresh in (False, True):
+    for fresh in (False,) if listed else (False, True):
         if fresh:  # a fresh session does not know the chat's access_hash yet
             await client.get_dialogs()
         for target in targets:

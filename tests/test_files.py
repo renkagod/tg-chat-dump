@@ -340,7 +340,5 @@ def test_a_dropped_connection_stops_every_account(tmp_path, monkeypatch):
             await download_files([(slow, slow.entity), (broken, broken.entity)], db, tmp_path / "out", limits, NOW, {})
         return sorted(left)
 
-    assert (
-        len(asyncio.run(go())) == 1
-    )  # the other account's download was stopped before the error went on, not left writing to the database
+    assert len(asyncio.run(go())) == 1  # the other account's download is stopped, not left running
     db.close()

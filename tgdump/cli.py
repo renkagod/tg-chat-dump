@@ -163,16 +163,18 @@ async def update_all(clients, workers, options, takeouts, again=False, recheck=R
     dumps = saved_dumps()
     if not dumps:
         raise SystemExit("No chats dumped yet")
-    known = {}  # the dialogs give every account the chats' access hashes
-    for found in await asyncio.gather(*(c.get_dialogs() for c in clients), return_exceptions=True):
+    # every account's chats as its dialogs show them: no chat has to be asked for again, one request per chat
+    # and account that a chat of people would also wait for when Telegram has had enough of such requests
+    listed = {}
+    lists = await asyncio.gather(*(c.get_dialogs() for c in clients), return_exceptions=True)
+    for c, found in zip(clients, lists, strict=True):
         if isinstance(found, Exception):  # the other accounts go on; this one finds its chats one by one
             log.warning(f"Cannot list the chats of an account: {found}")
-            continue
-        for d in found:
-            known.setdefault(d.entity.id, d.entity)
+        else:
+            listed[c] = {d.entity.id: d.entity for d in found}
     failed = []
     for chat_id, _, _ in dumps:
-        entity = known.get(chat_id)
+        entity = next((chats[chat_id] for chats in listed.values() if chat_id in chats), None)
         target = utils.get_peer(entity) if entity else chat_id
         try:
             await dump_chat(
@@ -184,6 +186,7 @@ async def update_all(clients, workers, options, takeouts, again=False, recheck=R
                 again=again,
                 recheck=recheck,
                 files=files,
+                seen={c: chats.get(chat_id) for c, chats in listed.items()},
             )
         except (ValueError, errors.RPCError) as e:
             log.warning(f"Cannot update {chat_id}: {e}")

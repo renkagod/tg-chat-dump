@@ -560,3 +560,20 @@ def test_a_worker_that_fails_stops_the_others(home):
         return left
 
     assert asyncio.run(go()) == ["stopped"]  # before the database was closed under it
+
+
+def test_a_chat_from_the_dialogs_is_not_asked_for_again(home):
+    tg, stranger = Telegram([day(1, 0)]), Telegram([day(1, 0)])
+
+    async def asked(*args):
+        raise AssertionError("asked Telegram again")
+
+    async def unknown(peer):
+        raise ValueError("never met")
+
+    tg.get_entity, stranger.get_entity, stranger.get_dialogs = asked, unknown, asked
+    asyncio.run(fetch.dump_chat([tg], 7, seen={tg: tg.entity}))
+    assert (home / "7.sqlite").exists()
+    # an account whose dialogs do not have the chat looks it up once, without reading its dialogs again
+    with pytest.raises(ValueError, match="None of the accounts"):
+        asyncio.run(fetch.dump_chat([stranger], 7, seen={stranger: None}))
