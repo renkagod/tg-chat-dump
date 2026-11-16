@@ -333,8 +333,7 @@ async def dump_chat(
     stats = stats if stats is not None else {}
     stats.update(phase="connecting", total=0, stored=0, fetched=0, accounts=0, work_total=0, work_left=0)
     stats.setdefault("label", "")
-    if topics and scope:
-        raise ValueError("Filters work only with whole-chat dumps, not with --topics")
+    scope = scope.within(topics)
     pairs = []
     found = await asyncio.gather(*(resolve(c, chat) for c in clients), return_exceptions=True)
     for c, e in zip(clients, found, strict=True):
@@ -358,18 +357,22 @@ async def dump_chat(
     whole = DATA / f"{entity.id}.sqlite"
     now = iso(datetime.datetime.now(datetime.UTC).replace(microsecond=0))
     # a filter is applied to the saved copy of the whole chat where there is one; a type only when that copy
-    # tells the types apart
-    local = scope and not topics and folder is None and full_dump_done(whole)
-    if local and (not scope.kind or has_details(whole)):
+    # tells the types apart. Filters inside topics always work this way: the topics are saved first
+    local = scope and folder is None and (topics or full_dump_done(whole))
+    if local and (topics or not scope.kind or has_details(whole)):
         try:
             sender = await client.get_peer_id(parse_chat(scope.from_user)) if scope.from_user else None
         except (ValueError, TypeError, errors.RPCError):
             sender = None  # an author that cannot be looked up is left to Telegram's search
+        if topics and scope.from_user and not sender:
+            raise ValueError(f"Cannot find the user {scope.from_user}")
         if sender or not scope.from_user:
-            # the whole chat is brought up to date, then the filters are applied to it locally
+            # the whole chat, or these topics of it, is brought up to date, then the filters are applied to it
+            # locally
             await dump_chat(
                 clients,
                 chat,
+                topics=topics,
                 workers=workers,
                 stats=stats,
                 # the files are wanted for the filtered messages only, and are downloaded below
@@ -378,9 +381,14 @@ async def dump_chat(
                 again=again,
                 recheck=recheck,
             )
+            if topics and scope.kind and not has_details(whole):
+                raise ValueError(
+                    "--type inside topics needs what versions before 1.3.0 did not save; "
+                    "run --refetch on the whole chat first"
+                )
             stats.update(phase="exporting", label="")
             found = await asyncio.to_thread(copy_scope, whole, db_path, scope, sender)
-            log.info(f"Filters: {scope.tag()}, {found} messages taken from the saved dump of the whole chat")
+            log.info(f"Filters: {scope.tag()}, {found} messages taken from the saved dump of the chat")
             stats.update(stored=found, fetched=0, local=True)
             export = functools.partial(
                 export_db, db_path, entity.id, title, scope=scope, reader="html" in options, formats=options
@@ -451,9 +459,8 @@ async def dump_chat(
                 log.info(f"Checking the messages from {start:%Y-%m-%d %H:%M} on for edits and deletions")
 
         if topics:
-            topics = [t for t in topics if t != 1]
-            if not topics:
-                raise ValueError("General (id 1) cannot be dumped on its own; dump the whole chat instead")
+            if not forum:
+                raise ValueError("The chat has no topics: it is not a forum")
             plan_topics(db, topics)
             if window:
                 recheck_topics(db, topics, window)

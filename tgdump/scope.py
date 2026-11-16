@@ -1,5 +1,6 @@
 """Filters for a partial dump: dates, author, message type."""
 
+import dataclasses
 import datetime
 import hashlib
 import json
@@ -111,6 +112,9 @@ def parse_date(s, end=False, today=None):
         raise ValueError(f"cannot read the date {s!r}; use YYYY-MM-DD, YYYY-MM, YYYY or 7d, 2w, 3m") from None
 
 
+LISTED_TOPICS = 5  # how many topic ids a folder name spells out
+
+
 @dataclass(frozen=True)
 class Scope:
     """A filtered dump gets its own database and output folder, so it never mixes with the full one."""
@@ -119,6 +123,7 @@ class Scope:
     until: datetime.date | None = None  # inclusive
     from_user: str | None = None
     kind: str | None = None
+    topics: tuple = ()  # the forum topics the filters are applied in; see within()
 
     def __post_init__(self):
         if self.kind and self.kind not in KINDS:
@@ -129,8 +134,20 @@ class Scope:
     def __bool__(self):
         return any((self.since, self.until, self.from_user, self.kind))
 
+    def within(self, topics):
+        """These filters inside some forum topics. Without filters the topics are a part of the whole dump."""
+        return dataclasses.replace(self, topics=tuple(sorted(set(topics)))) if self and topics else self
+
     def tag(self):
         parts = []
+        if self.topics:
+            ids = "-".join(map(str, self.topics))
+            if len(self.topics) > LISTED_TOPICS:  # a folder name has to stay short, and still be the only one
+                first = "-".join(map(str, self.topics[:LISTED_TOPICS]))
+                ids = (
+                    f"{first}-and-{len(self.topics) - LISTED_TOPICS}-more-{hashlib.sha1(ids.encode()).hexdigest()[:6]}"
+                )
+            parts.append(f"topics-{ids}")
         if self.since:
             parts.append(f"since-{self.since}")
         if self.until:
@@ -166,6 +183,9 @@ class Scope:
         if sender_id is not None:
             where.append("sender_id = ?")
             params.append(sender_id)
+        if self.topics:
+            where.append(f"topic_id IN ({','.join('?' * len(self.topics))})")
+            params += self.topics
         return " AND ".join(where), params
 
     @staticmethod

@@ -30,7 +30,7 @@ out/1234567890_My_Chat/
 
 - Over 100,000 messages a minute with Telegram's export mode and two accounts: about 4× Telegram Desktop's export and 10× the regular API (see [Performance](#performance)).
 - Run it without arguments for the interactive mode: log in with a QR code, find a chat as you type or paste its link, update everything you dumped before in one go, watch a progress bar with ETA.
-- A whole forum in one pass. Messages are sorted into topics as they arrive.
+- A whole forum in one pass. Messages are sorted into topics as they arrive. Or single topics, General included, with the same filters as a whole chat.
 - The chat is split into message-id ranges that several workers download at once. Telegram limits each account separately, so every extra account adds about as much speed as the first.
 - Progress is committed to SQLite every 100 messages. An interrupted run resumes where it stopped, and later runs fetch only new messages and append them to the files, so a repeat run of a large chat takes seconds. When a forum topic is renamed, its folder is renamed too.
 - A repeat run also finds the messages edited or deleted since the last one. An edited message keeps its earlier text next to the new one, a deleted message stays in the dump and is marked as deleted (see [Edits and deletions](#edits-and-deletions)).
@@ -121,7 +121,15 @@ uv run dump.py @somegroup --from @alice                           # one author
 uv run dump.py @somegroup --type links                            # links, docs, photos, videos, voice, pinned, ...
 ```
 
-A filtered dump gets its own database and folder, for example `out/1234567890_My_Chat_since-2026-01-01_links/`, so it never mixes with the full dump. Filters can be combined. They work with whole-chat dumps, not with `--topics`.
+A filtered dump gets its own database and folder, for example `out/1234567890_My_Chat_since-2026-01-01_links/`, so it never mixes with the full dump. Filters can be combined.
+
+`--topics 12,37` takes single topics of a forum instead of the whole chat; `1` is General. On its own it is a part of the chat's dump: the topics are saved to the chat's database and written to their folders in the chat's folder, and a repeat run fetches what is new in them. Together with filters, the topics are brought up to date first and the filtered messages go to a folder of their own, such as `out/1234567890_My_Chat_topics-12-37_since-2026-01-01/`:
+
+```sh
+uv run dump.py @someforum --topics 1                       # General alone
+uv run dump.py @someforum --topics 12,37 --since 30d       # the last 30 days of two topics
+uv run dump.py @someforum --topics 12 --type photos --with files   # the photos of one topic, downloaded
+```
 
 When the whole chat is already dumped, the filters are applied to the saved copy: the whole chat is brought up to date first, then the filtered folder is written from it without downloading the messages again. That goes for `--type` too. The saved messages tell their media, files and pins apart, and links are found the way the app shows them: addresses, bare domain names, links under words, link previews. On a large chat that finds 98% of what Telegram's own search for links returns, and about 5% on top, mostly addresses inside code blocks. Only a dump that still has messages saved before 1.3.0 asks Telegram for `--type`, until `--refetch`.
 
@@ -190,7 +198,7 @@ With arguments it runs without questions, for scripts and cron. Settings come fr
 uv run dump.py @somegroup                            # whole chat (or only new messages on repeat runs)
 uv run dump.py https://t.me/somegroup                # the same; --chat @somegroup works too
 uv run dump.py --update-all                          # new messages of every chat dumped before, for cron
-uv run dump.py --chat @somegroup --topics 12,37      # only these forum topics
+uv run dump.py --chat @somegroup --topics 12,37      # only these forum topics; 1 is General
 uv run dump.py --chat @somegroup --with meta,markdown   # with extras
 uv run dump.py --chat @somegroup --with files --file-size 50   # with files up to 50 MB, see above
 uv run dump.py --chat @somegroup --export-only       # rebuild the folders from the database, no network
@@ -284,7 +292,6 @@ The raw data is in `data/<chat id>.sqlite`, with tables `messages`, `topics`, `u
 - The reader does not play animated stickers in Telegram's own format (`.tgs`); the files are saved.
 - The account only sees what Telegram shows it: if the chat hides history from new members, older messages are not available.
 - People are saved when they have written in the chat; the list of members is not downloaded.
-- `--topics` cannot fetch the General topic on its own; the full-chat mode covers it.
 
 ## Responsible use
 

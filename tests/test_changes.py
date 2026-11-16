@@ -364,6 +364,18 @@ class Telegram:
         self.content = {}  # photo or document id -> the bytes of the file
         self.downloads = []  # (photo or document id, the data centre asked), in the order asked for
         self.looked_up = 0  # how many messages were asked for by id
+        self.unlisted = set()  # ids that the list of a topic leaves out
+
+    def listed(self, topic):
+        """The messages a forum topic lists: all of the chat for no topic, and never the topic's first one."""
+        found = []
+        for m in self.messages.values():
+            r = m.reply_to
+            own = (r.reply_to_top_id or r.reply_to_msg_id) if r is not None and r.forum_topic else 1
+            made = isinstance(m.action, types.MessageActionTopicCreate)
+            if topic is None or (own == topic and not made and m.id not in self.unlisted):
+                found.append(m)
+        return found
 
     async def get_entity(self, peer):
         return self.entity
@@ -371,20 +383,22 @@ class Telegram:
     async def get_me(self):
         return User(id=1, first_name="Me")
 
-    async def get_messages(self, entity, limit=None, ids=None, reverse=False, offset_date=None, filter=None):
+    async def get_messages(
+        self, entity, limit=None, ids=None, reverse=False, offset_date=None, filter=None, reply_to=None
+    ):
         if ids is not None:
             self.looked_up += len(ids)
             return [self.messages.get(i) for i in ids]
-        found = sorted(self.messages.values(), key=lambda m: m.id, reverse=not reverse)
+        found = sorted(self.listed(reply_to), key=lambda m: m.id, reverse=not reverse)
         if offset_date:
             found = [m for m in found if m.date < offset_date]
         out = Found(found[:limit])
-        out.total = len(self.messages)
+        out.total = len(self.listed(reply_to))
         return out
 
-    def iter_messages(self, entity, offset_id=0, min_id=0, wait_time=None, filter=None):
+    def iter_messages(self, entity, offset_id=0, min_id=0, wait_time=None, filter=None, reply_to=None):
         async def walk():
-            for m in sorted(self.messages.values(), key=lambda m: -m.id):
+            for m in sorted(self.listed(reply_to), key=lambda m: -m.id):
                 if filter is types.InputMessagesFilterPinned and not m.pinned:
                     continue
                 if m.id > min_id and (not offset_id or m.id < offset_id):

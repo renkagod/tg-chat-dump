@@ -45,7 +45,11 @@ def parse_args():
     p.add_argument("target", nargs="?", metavar="CHAT", help="chat id, @username or t.me link (same as --chat)")
     p.add_argument("--chat", default=s["TG_CHAT"], help="chat id, @username or t.me link")
     p.add_argument("--update-all", action="store_true", help="fetch the new messages of every chat dumped before")
-    p.add_argument("--topics", help="comma-separated topic ids; without it the whole chat is dumped")
+    p.add_argument(
+        "--topics",
+        help="only these forum topics, comma-separated ids (1 is General); with filters, the filtered messages "
+        "of these topics go to a folder of their own",
+    )
     p.add_argument("--workers", type=int, default=3, help="parallel workers per account")
     p.add_argument(
         "--account",
@@ -107,7 +111,8 @@ def parse_args():
     try:
         a.options = parse_options(a.options)
         a.files = file_limits(a.file_types, a.file_size)
-        a.scope = Scope(parse_date(a.since), parse_date(a.until, end=True), a.from_user, a.kind)
+        a.topics = sorted({int(t) for t in a.topics.split(",") if t.strip()}) if a.topics else None
+        a.scope = Scope(parse_date(a.since), parse_date(a.until, end=True), a.from_user, a.kind).within(a.topics)
     except ValueError as e:
         p.error(str(e))
     return a
@@ -194,12 +199,11 @@ async def main():
                 db_path, entity.id, title, scope=a.scope, full=True, reader="html" in a.options, formats=a.options
             )
             return
-        topics = [int(t) for t in a.topics.split(",")] if a.topics else None
         async with Takeouts() as takeouts:  # also covers a channel's comments, dumped right after it
             await dump_chat(
                 using,
                 chat,
-                topics=topics,
+                topics=a.topics,
                 workers=a.workers,
                 options=a.options,
                 scope=a.scope,

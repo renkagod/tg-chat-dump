@@ -318,6 +318,8 @@ def save(db, key, rows, done=False, gone=None):
         if topic is not None:  # a topic's first message is not among its replies
             where += " AND topic_id = ? AND id != ?"
             params += [topic, topic]
+        if topic == 1:  # nor are some of the joins and boosts that have no topic and so count as General
+            where += " AND action IS NULL"
         sql = f"UPDATE messages SET deleted_at=? WHERE {where} AND id NOT IN ({','.join('?' * len(ids))})"
         marked = db.execute(sql, params + ids).rowcount
     if done:
@@ -425,8 +427,12 @@ def refetch(db, topics=None):
     deleted from Telegram since stay. The next export is written from scratch. An interrupted refetch goes on
     with the next run, like any unfinished download.
     """
-    if topics:
-        db.executemany("UPDATE tasks SET lo=0, cursor=0, done=0 WHERE key=?", [(f"topic:{t}",) for t in topics])
+    if topics:  # a topic saved with the whole chat has no task of its own yet
+        db.executemany(
+            "INSERT INTO tasks(key, topic, lo, cursor) VALUES(?, ?, 0, 0) "
+            "ON CONFLICT(key) DO UPDATE SET lo=0, cursor=0, done=0",
+            [(f"topic:{t}", t) for t in topics],
+        )
     else:
         db.execute("UPDATE tasks SET cursor=hi + 1, done=0 WHERE topic IS NULL")
         set_state(db, "lacks_details", None)
