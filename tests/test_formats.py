@@ -401,3 +401,16 @@ def test_what_is_written_can_be_read_back(home, read, tmp_path, monkeypatch):
         for mid, m in records(out / name).items():
             for key in ("date", "topic_id", "sender_id", "sender", "text", "reply_to", "media", "action"):
                 assert m[key] == saved[mid][key], (mid, key)
+
+
+def test_an_import_writes_to_the_current_output_folder(tmp_path):
+    from tgdump.imports import dump_folder
+    from tgdump.store import open_db
+
+    old, new = tmp_path / "old", tmp_path / "new"
+    (old / "7_Club").mkdir(parents=True)
+    db = open_db(tmp_path / "7.sqlite")
+    db.execute("INSERT INTO exports VALUES(?, 0, 0, NULL)", (str(old / "7_Club"),))
+    assert dump_folder(db, 7, "Club", old) == old / "7_Club"
+    assert dump_folder(db, 7, "Club", new) == new / "7_Club"  # the folder written before is elsewhere
+    db.close()

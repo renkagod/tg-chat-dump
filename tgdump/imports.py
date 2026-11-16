@@ -5,7 +5,7 @@ import logging
 import shutil
 from pathlib import Path
 
-from .config import DATA
+from .config import DATA, out_dir
 from .export import chat_folder, export
 from .store import COLUMN_NAMES, get_chat, open_db, set_chat, set_state
 from .tdesktop import chat_kind, read_message, topics_of
@@ -15,9 +15,10 @@ log = logging.getLogger("dump")
 
 
 def dump_folder(db, chat_id, title, out_root=None):
-    """The chat's folder: the one a run has written already, or a new one named after the chat."""
+    """The chat's folder in the output folder: the one a run has written already, or a new one."""
+    root = Path(out_root or out_dir()).resolve()
     for (folder,) in db.execute("SELECT folder FROM exports"):
-        if Path(folder).is_dir() and out_root in (None, Path(folder).parent):
+        if Path(folder).is_dir() and Path(folder).resolve().parent == root:
             return Path(folder)
     return chat_folder(chat_id, title, out_root=out_root)
 
