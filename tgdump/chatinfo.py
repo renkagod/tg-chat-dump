@@ -1,6 +1,5 @@
 """What the app shows about a chat besides its messages: the chat itself, forum topics, pins, the people in it."""
 
-import asyncio
 import collections
 import logging
 
@@ -9,7 +8,7 @@ from telethon.tl.types import Channel, Chat, User
 
 from .details import peer_id
 from .store import person, save_users
-from .util import fmt_duration, iso
+from .util import all_or_none, fmt_duration, iso
 
 log = logging.getLogger("dump")
 PER_REQUEST = 100  # users or custom emoji asked about in one request
@@ -266,7 +265,7 @@ async def fetch_bios(clients, db, when, stats):
             stats["people"] = (done, total)
 
     try:
-        await asyncio.gather(*(run(clients[n:] + clients[:n]) for n in range(len(clients))))
+        await all_or_none(run(clients[n:] + clients[:n]) for n in range(len(clients)))
     finally:
         db.commit()
     return done

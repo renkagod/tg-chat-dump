@@ -7,7 +7,7 @@ import logging
 from telethon import errors, functions, utils
 
 from .store import person, reaction_key, save_users
-from .util import fmt_duration, iso
+from .util import all_or_none, fmt_duration, iso
 
 log = logging.getLogger("dump")
 PAGE = 100  # people per request, the most Telegram gives
@@ -123,7 +123,7 @@ async def fetch_who(pairs, db, when, stats, topics=None):
                 db.commit()
 
     try:
-        await asyncio.gather(*(run(client, peer) for client, peer in pairs))
+        await all_or_none(run(client, peer) for client, peer in pairs)
     finally:
         db.commit()
     closed = sum(n for (what, error), n in refused.items() if error == "PollVoteRequiredError")

@@ -1,4 +1,19 @@
+import asyncio
 import re
+
+
+async def all_or_none(coros):
+    """Run the workers together; when one fails, the others are stopped before the error goes on.
+
+    asyncio.gather leaves them running, and they would go on writing to a database that is closed by then.
+    """
+    tasks = [asyncio.ensure_future(c) for c in coros]
+    try:
+        await asyncio.gather(*tasks)
+    finally:
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def iso(d):

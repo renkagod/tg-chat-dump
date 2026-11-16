@@ -245,3 +245,34 @@ def test_several_answers_of_one_voter(tmp_path):
     assert db.execute("SELECT user_id, option FROM voted ORDER BY option").fetchall() == [(11, 0), (11, 1)]
     assert waiting(db) == [] and db.execute("SELECT id FROM changed").fetchall() == [(1,)]
     db.close()
+
+
+def test_a_worker_that_fails_stops_the_others():
+    from tgdump.util import all_or_none
+
+    left = []
+
+    async def fails():
+        raise ConnectionError("dropped")
+
+    async def slow():
+        try:
+            await asyncio.sleep(10)
+        finally:
+            left.append("stopped")
+
+    async def both():
+        await all_or_none([slow(), fails()])
+
+    try:
+        asyncio.run(both())
+    except ConnectionError:
+        pass
+    assert left == ["stopped"]  # before the error went on, so nothing writes to a closed database afterwards
+
+
+def test_a_reaction_without_a_date_is_still_written_for_telegram_desktop():
+    from tgdump.tdesktop import reaction_list
+
+    found = reaction_list({"👍": 1}, [{"user_id": 11, "name": "Ann", "reaction": "👍", "date": None}])
+    assert found[0]["recent"] == [{"from": "Ann", "from_id": "user11"}]

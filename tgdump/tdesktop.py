@@ -149,7 +149,9 @@ def reaction_list(reactions, reacted=()):
     """Reactions as Telegram Desktop lists them; `recent` names who put each, when the dump knows it."""
     out, who = [], {}
     for r in reacted:
-        one = {"from": r["name"], "from_id": peer_tag(r["user_id"]), "date": stamps("date", r["date"])["date"]}
+        one = {"from": r["name"], "from_id": peer_tag(r["user_id"])}
+        if r["date"]:  # Telegram may leave it out
+            one["date"] = stamps("date", r["date"])["date"]
         who.setdefault(r["reaction"], []).append(one)
     for key, count in (reactions or {}).items():
         if key.startswith("custom:"):
