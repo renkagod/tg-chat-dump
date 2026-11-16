@@ -86,6 +86,7 @@ Dump it with 2 accounts, extras: takeout, html? [Y/n, f = filters]
 - Matching chats pop up under the cursor as you type; Tab fills in the highlighted one and Enter picks it. A pasted `t.me` link or an exact `@username` works too.
 - `?` and some words search the messages of the chats you dumped before (see [Search](#search)).
 - Enter on an empty search lists the chats you dumped before, the latest first, with how many messages are saved. Pick one to fetch its new messages, several to update them in a row (`2 5 7` or `4-6`), or `u` for all of them.
+- In the list a search gives, a number picks a chat; several (`1 3` or `2-4`) are dumped one after another with the saved extras.
 - If nothing in your chats matches the search, public groups and channels are searched too. Public chats can be dumped without joining.
 - Every account that can see the chat is used. A private chat or a small (non-super) group is the exception: each account has its own copy of it, so you see how many messages each one has and pick one. Enter takes the account that saved the chat before, or the biggest copy.
 - `/` opens the settings: add (`a`) or remove (`d N`) accounts, toggle the extras (`x`), set the output folder (`f`). They are saved. By default the output goes to `~/tg-chat-dump`, or `out/` in a source checkout.
@@ -220,6 +221,7 @@ With arguments it runs without questions, for scripts and cron. Settings come fr
 ```sh
 uv run dump.py @somegroup                            # whole chat (or only new messages on repeat runs)
 uv run dump.py https://t.me/somegroup                # the same; --chat @somegroup works too
+uv run dump.py @somegroup @somechannel -1001234567890   # several chats, one after another
 uv run dump.py --update-all                          # new messages of every chat dumped before, for cron
 uv run dump.py --chat @somegroup --topics 12,37      # only these forum topics; 1 is General
 uv run dump.py --chat @somegroup --with meta,markdown   # with extras
@@ -235,6 +237,8 @@ uv run dump.py --chat @somegroup --workers 2         # workers per account, defa
 uv run dump.py --chat @friend --account acc2         # only this account: session name, @username or id
 uv run dump.py --chat @somegroup --out "D:\Telegram dumps"   # output folder, remembered in .env
 ```
+
+Several chats named in one run are dumped in a row with the same settings; the accounts log in and enter export mode once for all of them. A chat that cannot be dumped is reported and the others go on; the run then ends with exit code 1, as `--update-all` does.
 
 ### More accounts, more speed
 

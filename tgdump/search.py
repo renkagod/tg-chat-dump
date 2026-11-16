@@ -108,6 +108,7 @@ def search(query, scope=NO_SCOPE, chat=None, limit=LIMIT):
     wanted = words(query)
     if not wanted:
         raise ValueError("nothing to search for")
+    named = [chat] if isinstance(chat, str | int) else list(chat or ())
     paths = [p for p in DATA.glob("*.sqlite") if p.stem.isdigit()]  # a filtered dump holds a part of a whole one
     for p in sorted(paths, key=lambda p: p.stat().st_mtime, reverse=True):
         chat_id = int(p.stem)
@@ -115,7 +116,7 @@ def search(query, scope=NO_SCOPE, chat=None, limit=LIMIT):
             try:
                 folders = [Path(f) for (f,) in db.execute("SELECT folder FROM exports")]
                 folder = next((f for f in folders if f.is_dir()), None)
-                if chat and not is_chat(db, folder, chat_id, chat):
+                if named and not any(is_chat(db, folder, chat_id, ref) for ref in named):
                     continue
                 found = Found(chat_id, chat_title(db, folder, chat_id), folder)
                 found.total, found.hits = search_db(db, wanted, scope, limit)

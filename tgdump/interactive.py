@@ -470,7 +470,8 @@ async def pick_chat(accounts, chats, session):
             q = None
             continue
         print_chats(items, len(accounts))
-        hint = "Number, [p] search public chats, or type to search again > " if q else "Number or Enter > "
+        several = "Number or several (2 5, 4-6)"
+        hint = f"{several}, [p] search public chats, or type to search again > " if q else f"{several} or Enter > "
         choice = await ask(keys(hint))
         if choice.lower() == "p" and q:
             items = await search_public(client, q, chats)
@@ -480,9 +481,14 @@ async def pick_chat(accounts, chats, session):
                 continue
             print_chats(items, len(accounts))
             choice = await ask(keys("Number or Enter > "))
-        if choice.isdigit() and 1 <= int(choice) <= min(len(items), SHOW):
-            return items[int(choice) - 1]
-        q = None if choice.isdigit() or choice.lower() == "p" else choice or None
+        picks = parse_picks(choice, min(len(items), SHOW)) if choice else None
+        if picks and len(picks) > 1:  # dumped one after another, each with the saved extras
+            return "update", [items[i - 1] for i in picks]
+        if picks:
+            return items[picks[0] - 1]
+        if picks == []:
+            print(paint(f"Pick numbers from 1 to {min(len(items), SHOW)}.", "yellow"))
+        q = None if picks == [] or choice.lower() == "p" else choice or None
 
 
 async def count_new(client, target, db):

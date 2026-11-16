@@ -43,8 +43,13 @@ def parse_args():
         description="Dump a Telegram chat, forum topics included, into SQLite and per-topic folders.",
         epilog="Run without arguments for the interactive mode.",
     )
-    p.add_argument("target", nargs="?", metavar="CHAT", help="chat id, @username or t.me link (same as --chat)")
-    p.add_argument("--chat", help="chat id, @username or t.me link")
+    p.add_argument(
+        "target",
+        nargs="*",
+        metavar="CHAT",
+        help="chat id, @username or t.me link; several chats are dumped one after another",
+    )
+    p.add_argument("--chat", help="one more way to name a chat: id, @username or t.me link")
     p.add_argument("--update-all", action="store_true", help="fetch the new messages of every chat dumped before")
     p.add_argument(
         "--topics",
@@ -119,10 +124,12 @@ def parse_args():
     )
     p.add_argument("--login", metavar="NAME", help="log in one more account to data/NAME.session and exit")
     a = p.parse_args()
-    a.named = a.target or a.chat  # the chat named on the command line, if any
-    a.chat = a.named or s["TG_CHAT"]
-    if not a.chat and not a.login and not a.update_all and not a.import_path and a.search is None:
+    a.named = [*a.target, *([a.chat] if a.chat else [])]  # the chats named on the command line
+    a.chats = a.named or [c for c in [s["TG_CHAT"]] if c]
+    if not a.chats and not a.login and not a.update_all and not a.import_path and a.search is None:
         p.error("name a chat (tg-chat-dump @somegroup), pass --update-all, or set TG_CHAT in .env")
+    if a.topics and len(a.chats) > 1:
+        p.error("--topics names the topics of one chat")
     try:
         a.options = parse_options(a.options)
         a.files = file_limits(a.file_types, a.file_size)
@@ -211,28 +218,40 @@ async def main():
             async with Takeouts() as takeouts:
                 await update_all(using, a.workers, a.options, takeouts, a.refetch, a.recheck, a.files)
             return
-        chat = parse_chat(a.chat)
         if a.export_only:
-            entity = await resolve(using[0], chat)
-            db_path = DATA / f"{entity.id}{a.scope.db_suffix()}.sqlite"
-            title = utils.get_display_name(entity)
-            export_db(
-                db_path, entity.id, title, scope=a.scope, full=True, reader="html" in a.options, formats=a.options
-            )
+            for chat in a.chats:
+                entity = await resolve(using[0], parse_chat(chat))
+                db_path = DATA / f"{entity.id}{a.scope.db_suffix()}.sqlite"
+                title = utils.get_display_name(entity)
+                how = dict(scope=a.scope, full=True, reader="html" in a.options, formats=a.options)
+                export_db(db_path, entity.id, title, **how)
             return
-        async with Takeouts() as takeouts:  # also covers a channel's comments, dumped right after it
-            await dump_chat(
-                using,
-                chat,
-                topics=a.topics,
-                workers=a.workers,
-                options=a.options,
-                scope=a.scope,
-                takeouts=takeouts,
-                again=a.refetch,
-                recheck=a.recheck,
-                files=a.files,
-            )
+        failed = []
+        # export mode is entered once for all the chats; it also covers a channel's comments, dumped right after it
+        async with Takeouts() as takeouts:
+            for chat in a.chats:
+                try:
+                    await dump_chat(
+                        using,
+                        parse_chat(chat),
+                        topics=a.topics,
+                        workers=a.workers,
+                        options=a.options,
+                        scope=a.scope,
+                        takeouts=takeouts,
+                        again=a.refetch,
+                        recheck=a.recheck,
+                        files=a.files,
+                    )
+                except (ValueError, errors.RPCError) as e:
+                    if len(a.chats) == 1:
+                        raise
+                    log.warning(f"Cannot dump {chat}: {e}")  # the other chats are still dumped
+                    failed.append(chat)
+        if len(a.chats) > 1:
+            log.info(f"Dumped {len(a.chats) - len(failed)} of {len(a.chats)} chats")
+        if failed:
+            raise SystemExit(1)
     finally:
         for c in clients:
             await c.disconnect()
